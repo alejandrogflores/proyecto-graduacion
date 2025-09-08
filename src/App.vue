@@ -1,30 +1,37 @@
-<script setup lang="ts">
-import HelloWorld from './components/HelloWorld.vue'
-</script>
-
 <template>
-  <div>
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo" alt="Vite logo" />
-    </a>
-    <a href="https://vuejs.org/" target="_blank">
-      <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-    </a>
-  </div>
-  <HelloWorld msg="Vite + Vue" />
+  <nav style="padding:12px;border-bottom:1px solid #eee">
+    <RouterLink to="/" style="margin-right:12px">Inicio</RouterLink>
+    <RouterLink to="/progress" style="margin-right:12px">Mi progreso</RouterLink>
+    <button v-if="user" @click="logout">Salir ({{ user.displayName }})</button>
+    <RouterLink v-else to="/login">Login</RouterLink>
+  </nav>
+  <RouterView />
 </template>
 
-<style scoped>
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
+<script setup lang="ts">
+import { ref, onMounted } from 'vue';
+import { RouterLink, RouterView } from 'vue-router';
+import { auth } from './services/firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { ensureUserDocument } from './services/usersRepo'; //  importamos el helper
+
+const user = ref<any>(null);
+
+// Detecta cambios de sesión al montar la app
+onMounted(() => {
+  onAuthStateChanged(auth, async (u) => {
+    user.value = u;
+    if (u) {
+      //  asegura que exista/actualice el documento en Firestore
+      await ensureUserDocument(u);
+    }
+  });
+});
+
+// Cierra sesión y redirige a /login
+async function logout() {
+  await signOut(auth);
+  window.location.href = '/login';
 }
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.vue:hover {
-  filter: drop-shadow(0 0 2em #42b883aa);
-}
-</style>
+</script>
+
