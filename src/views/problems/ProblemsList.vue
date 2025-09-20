@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
-
 import {
   query,
   orderBy,
@@ -29,83 +28,62 @@ const router = useRouter();
 
 // ===== Perfil (reactivo) =====
 const profile = useProfileStore();
-const { ready } = storeToRefs(profile);
+const { ready, role, uid } = storeToRefs(profile); // 👈 como pediste
 
-// Política Opción A:
-const canEdit = () => profile.isTeacherOrAdmin;   // cualquier teacher/admin
-const canDelete = () => profile.role === "admin"; // solo admin
-
-// ✅ Mostrar respuestas solo a teacher/admin (y solo cuando el perfil ya cargó)
-const revealAnswers = computed(
-  () => ready.value && (profile.role === "teacher" || profile.role === "admin")
-);
+const canManage = computed(() => role.value === "teacher" || role.value === "admin");
+const revealAnswers = computed(() => ready.value && canManage.value);
 
 const loading = ref(true);
 const error = ref<string | null>(null);
 const rows = ref<Row[]>([]);
 let off: (() => void) | null = null;
 
-/** Normaliza el campo options para soportar docs viejos que lo guardaron como string JSON */
 function looksLikeJsonArray(s: string) {
   const t = s.trim();
   return t.startsWith("[") && t.endsWith("]");
 }
-
 function coerceOptions(raw: unknown): string[] {
-  if (Array.isArray(raw)) {
-    const arr = raw.map(String);
-    if (arr.length === 1 && looksLikeJsonArray(arr[0])) {
-      try {
-        const parsed = JSON.parse(arr[0]);
-        return Array.isArray(parsed) ? parsed.map(String) : arr;
-      } catch { return arr; }
+  if (Array.isArray(raw)) return raw.map(String);
+  if (typeof raw === "string" && looksLikeJsonArray(raw)) {
+    try {
+      const p = JSON.parse(raw);
+      return Array.isArray(p) ? p.map(String) : [raw];
+    } catch {
+      return [raw];
     }
-    return arr;
   }
-  if (typeof raw === "string") {
-    if (looksLikeJsonArray(raw)) {
-      try {
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed.map(String) : [raw];
-      } catch { return [raw]; }
-    }
-    return [raw];
-  }
+  if (typeof raw === "string") return [raw];
   return [];
 }
-
-/** Formateador robusto de timestamps */
 function fmtTs(ts: any): string {
-  if (!ts) return "—";
   try {
+    if (!ts) return "—";
     if (typeof ts.toDate === "function") return ts.toDate().toLocaleString();
     if (typeof ts.seconds === "number") return new Date(ts.seconds * 1000).toLocaleString();
     return new Date(ts).toLocaleString();
-  } catch { return "—"; }
+  } catch {
+    return "—";
+  }
 }
 
 onMounted(() => {
   loading.value = true;
   error.value = null;
-
-  let qRef: any;
-  try {
-    qRef = query(colProblems, orderBy("createdAt", "desc"));
-  } catch {
-    qRef = query(colProblems);
-  }
-
+  const qRef = (() => {
+    try {
+      return query(colProblems, orderBy("createdAt", "desc"));
+    } catch {
+      return query(colProblems);
+    }
+  })();
   off = onSnapshot(
     qRef,
     (snap: QuerySnapshot<DocumentData>) => {
-      console.log("[problems] docs:", snap.size);
       rows.value = snap.docs.map((d) => {
         const data = d.data() as any;
         const options = coerceOptions(data.options);
-
         let correctIndex = Number.isInteger(data.correctIndex) ? data.correctIndex : 0;
         if (correctIndex < 0 || correctIndex >= options.length) correctIndex = 0;
-
         return {
           id: d.id,
           title: data.title ?? "",
@@ -115,7 +93,7 @@ onMounted(() => {
           createdAt: data.createdAt ?? null,
           updatedAt: data.updatedAt ?? null,
           createdBy: data.createdBy ?? null,
-        } as Row;
+        };
       });
       loading.value = false;
     },
@@ -126,27 +104,27 @@ onMounted(() => {
     }
   );
 });
+onBeforeUnmount(() => {
+  if (off) off();
+});
 
-onBeforeUnmount(() => { if (off) off(); });
-
-function goNew() {
+function goCreate() {
   router.push({ name: "ProblemNew" });
 }
 function goEdit(id: string) {
   router.push({ name: "ProblemEdit", params: { id } });
 }
-
 async function removeRow(id: string) {
   if (!confirm("¿Eliminar este problema? (solo admin)")) return;
   try {
     await deleteDoc(problemDoc(id));
   } catch (e: any) {
     console.error(e);
-    if (e?.code === "permission-denied") {
-      alert("Solo un administrador puede eliminar problemas.");
-    } else {
-      alert("No se pudo eliminar. Revisa la consola.");
-    }
+    alert(
+      e?.code === "permission-denied"
+        ? "Solo un administrador puede eliminar problemas."
+        : "No se pudo eliminar. Revisa la consola."
+    );
   }
 }
 </script>
@@ -155,14 +133,12 @@ async function removeRow(id: string) {
   <section class="max-w-5xl mx-auto p-4">
     <header class="flex items-center justify-between mb-4">
       <h1 class="text-2xl font-semibold">Banco de problemas</h1>
-
-      <!-- Botón solo visible para teacher/admin cuando el perfil ya cargó -->
       <button
-        v-if="ready && profile.isTeacherOrAdmin"
-        class="px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700"
-        @click="goNew"
+        v-if="ready && canManage"
+        class="px-3 py-2 rounded bg-blue-600 text-white"
+        @click="goCreate"
       >
-        + Nuevo problema
+        Nuevo problema
       </button>
     </header>
 
@@ -171,70 +147,45 @@ async function removeRow(id: string) {
     <p v-else-if="error" class="text-red-600">{{ error }}</p>
 
     <div v-else class="space-y-4">
-      <article
-        v-for="r in rows"
-        :key="r.id"
-        class="border rounded p-4 hover:shadow-sm transition"
-      >
-        <h2 class="font-semibold text-xl mb-1">{{ r.title }}</h2>
-        <p class="text-sm text-gray-700 mb-3">{{ r.statement }}</p>
+      <article v-for="p in rows" :key="p.id" class="border rounded-lg p-4 mb-4">
+        <h2 class="font-medium text-lg">{{ p.title }}</h2>
+        <p class="text-sm text-gray-600 mb-3">{{ p.statement }}</p>
 
-        <ul class="options list-none pl-0 ml-0 mt-2 text-sm space-y-1">
-          <li v-for="(opt, i) in r.options" :key="i" class="flex items-start gap-2">
-            <span class="inline-block min-w-6 font-mono">
-              {{ String.fromCharCode(65 + i) }})
-            </span>
-            <span :class="revealAnswers && i === r.correctIndex ? 'font-semibold' : ''">
-              <span v-if="revealAnswers && i === r.correctIndex">[✔] </span>
-              <span v-else>[ ] </span>
-              {{ opt }}
-            </span>
+        <ul v-if="revealAnswers" class="text-sm text-gray-700 mb-3">
+          <li v-for="(opt, i) in p.options" :key="i">
+            {{ String.fromCharCode(65 + i) }}) {{ opt }}
+            <span v-if="i === p.correctIndex">✔</span>
           </li>
         </ul>
 
-        <p class="text-xs text-gray-500 mt-1">
-          <span v-if="r.createdAt">Creado: {{ fmtTs(r.createdAt) }}</span>
-          <span v-if="r.updatedAt"> · Actualizado: {{ fmtTs(r.updatedAt) }}</span>
-        </p>
-
-        <div class="mt-3 flex gap-2">
-          <!-- Alumnos ven "Resolver" -->
-          <RouterLink
-            v-if="!profile.isTeacherOrAdmin"
-            :to="{ name: 'ProblemSolve', params: { id: r.id } }"
-            class="inline-block px-2 py-1 rounded border hover:bg-gray-50"
+        <div class="flex gap-2">
+          <router-link
+            class="px-3 py-1 rounded border"
+            :to="{ name: 'ProblemSolve', params: { id: p.id } }"
           >
             Resolver
-          </RouterLink>
+          </router-link>
 
-          <!-- Docentes/Admin -->
+          <!-- ✅ condición pedida -->
           <button
-            v-if="canEdit()"
-            class="px-2 py-1 rounded border hover:bg-gray-50"
-            @click="goEdit(r.id)"
+            v-if="canManage || p.createdBy === profile.uid"
+            class="px-3 py-1 rounded bg-amber-500 text-white"
+            @click="goEdit(p.id)"
           >
             Editar
           </button>
-          <button
-            v-if="canDelete()"
-            class="px-2 py-1 rounded border border-red-400 text-red-600 hover:bg-red-50"
-            @click="removeRow(r.id)"
-          >
-            Eliminar
-          </button>
         </div>
+
+        <p class="text-xs text-gray-500 mt-2">
+          Creado: {{ fmtTs(p.createdAt) }} — Actualizado: {{ fmtTs(p.updatedAt) }}
+        </p>
       </article>
 
-      <p v-if="rows.length === 0 && !loading" class="text-gray-600">
-        Aún no hay problemas.
-      </p>
+      <p v-if="rows.length === 0 && !loading" class="text-gray-600">Aún no hay problemas.</p>
     </div>
   </section>
 </template>
 
-<style scoped>
-.options { list-style: none; padding-left: 0; margin-left: 0; }
-.options li::marker { content: ""; }
-</style>
+
 
 

@@ -1,160 +1,270 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, reactive } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { addDoc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
-import { colProblems, problemDoc, type Problem, auth } from "@/services/firebase";
-import { useProfileStore } from "@/stores/profile";
+import { addDoc, updateDoc, getDoc, serverTimestamp } from "firebase/firestore";
+import { auth, colProblems, problemDoc, type Problem } from "@/services/firebase";
 
 const route = useRoute();
 const router = useRouter();
-const profile = useProfileStore();
 
-const id = computed(() => route.params.id as string | undefined);
-const isEdit = computed(() => !!id.value);
+const isEdit = computed(() => !!route.params.id);
+const problemId = computed(() => String(route.params.id ?? ""));
 
 const loading = ref(false);
-const saving  = ref(false);                 // 👈 nuevo
-const error   = ref<string | null>(null);
+const error = ref<string | null>(null);
 
-// modelo
-const title = ref("");
-const statement = ref("");
-const options = ref<string[]>(["", "", "", ""]);
-const correctIndex = ref<number>(0);
+// ===== Modelo reactivo =====
+type Difficulty = Problem["difficulty"];
+type PType = Problem["type"];
 
-function addOption() { options.value.push(""); }
-function removeOption(i: number) {
-  if (options.value.length <= 2) return;
-  options.value.splice(i, 1);
-  if (correctIndex.value >= options.value.length) correctIndex.value = 0;
-}
+const form = reactive<{
+  type: PType;
+  title: string;
+  statement: string;
+  options: string[];
+  correctIndex: number;
+  correctAnswer: string;
+  tolerance: number | null;
+  tags: string;
+  difficulty: Difficulty;
+}>({
+  type: "multiple-choice",
+  title: "",
+  statement: "",
+  options: ["", "", "", ""],
+  correctIndex: 0,
+  correctAnswer: "",
+  tolerance: null,
+  tags: "",
+  difficulty: "easy",
+});
 
-async function load() {
+onMounted(loadIfEdit);
+
+async function loadIfEdit() {
   if (!isEdit.value) return;
-  loading.value = true; error.value = null;
+  loading.value = true;
   try {
-    const snap = await getDoc(problemDoc(id.value!));
-    if (!snap.exists()) { error.value = "El problema no existe."; return; }
-
-    // (opcional) si quieres bloquear edición para no-teachers aquí
-    if (!profile.isTeacherOrAdmin) {
-      error.value = "No tienes permisos para editar este problema.";
-      setTimeout(() => router.push({ name: "ProblemsList" }), 1200);
-      return;
-    }
-
+    const snap = await getDoc(problemDoc(problemId.value));
+    if (!snap.exists()) throw new Error("No existe el problema");
     const p = snap.data() as Problem;
-    title.value = p.title ?? "";
-    statement.value = p.statement ?? "";
-    options.value = Array.isArray(p.options) && p.options.length ? p.options.map(String) : ["",""];
-    correctIndex.value = Number.isInteger(p.correctIndex) ? (p.correctIndex as number) : 0;
-    if (correctIndex.value < 0 || correctIndex.value >= options.value.length) correctIndex.value = 0;
+
+    form.type = p.type ?? "multiple-choice";
+    form.title = p.title ?? "";
+    form.statement = p.statement ?? "";
+    form.options = p.options ?? ["", "", "", ""];
+    form.correctIndex = p.correctIndex ?? 0;
+    form.correctAnswer = p.correctAnswer ?? "";
+    form.tolerance = (p as any).tolerance ?? null;
+    form.tags = (p.topicTags ?? []).join(", ");
+    form.difficulty = p.difficulty ?? "easy";
   } catch (e: any) {
-    error.value = e?.message ?? "No se pudo cargar el problema.";
+    error.value = e.message;
   } finally {
     loading.value = false;
   }
 }
 
-async function save() {
-  console.log("[SAVE] isEdit:", isEdit.value, "id:", id.value);
-  error.value = null;
-  saving.value = true;
+function validate(): string | null {
+  if (!form.title.trim()) return "Falta el título.";
+  if (!form.statement.trim()) return "Falta el enunciado.";
+
+  if (form.type === "multiple-choice") {
+    const filled = form.options.filter((o) => o.trim() !== "");
+    if (filled.length < 2) return "Múltiple opción requiere al menos 2 opciones.";
+    if (form.correctIndex < 0 || form.correctIndex >= form.options.length) {
+      return "El índice de respuesta correcta no es válido.";
+    }
+  }
+
+  if (form.type === "true-false" && form.options.length !== 2) {
+    return "Verdadero/Falso debe tener exactamente 2 opciones.";
+  }
+
+  if (form.type === "numeric" && !form.correctAnswer.trim()) {
+    return "Numérica requiere la respuesta correcta.";
+  }
+
+  return null;
+}
+
+async function onSubmit() {
+  const v = validate();
+  if (v) {
+    error.value = v;
+    return;
+  }
+
+  const base = {
+    type: form.type,
+    title: form.title.trim(),
+    statement: form.statement.trim(),
+    options: form.options,
+    correctIndex: form.correctIndex,
+    tags: form.tags,
+    difficulty: form.difficulty,
+    updatedAt: serverTimestamp(),
+  };
 
   try {
-    // Normalización: sin vacíos, índice dentro de rango
-    const opts = options.value.map(o => o.trim()).filter(Boolean);
-    let ci = Number(correctIndex.value);
-    if (opts.length < 2) throw new Error("Debe haber al menos 2 opciones.");
-    if (ci < 0 || ci >= opts.length) ci = 0;
-
-    const base = {
-      title: title.value.trim(),
-      statement: statement.value.trim(),
-      options: opts,
-      correctIndex: ci,
-    };
-
-    if (!isEdit.value) {
-      const payload = {
-        ...base,
-        createdBy: auth.currentUser!.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-      console.log("[SAVE][create] payload", payload);
-      await addDoc(colProblems, payload);
+    if (isEdit.value) {
+      await updateDoc(problemDoc(problemId.value), base);
     } else {
-      const payload = { ...base, updatedAt: serverTimestamp() };
-      const ref = problemDoc(id.value!);
-      console.log("[SAVE][update] ref", ref.path, "payload", payload);
-      await setDoc(ref, payload, { merge: true });
+      // logs para verificar el uid
+      console.log("[create] payload", {
+        ...base,
+        createdBy: auth.currentUser?.uid,
+      });
+      console.log("[create] uid", auth.currentUser?.uid);
+
+      await addDoc(colProblems, {
+        ...base,
+        createdBy: auth.currentUser?.uid ?? null, // 👈 requerido por reglas
+        createdAt: serverTimestamp(),
+      });
     }
 
-    console.log("[SAVE] OK");
     router.push({ name: "ProblemsList" });
   } catch (e: any) {
-    console.error("[SAVE] error", e);
-    error.value = e?.message ?? String(e);
-  } finally {
-    saving.value = false;
+    error.value = e.message;
   }
 }
 
-onMounted(load);
+function addOption() {
+  if (form.type !== "multiple-choice") return;
+  form.options.push("");
+}
+
+function removeOption(i: number) {
+  if (form.options.length <= 2) return;
+  form.options.splice(i, 1);
+  if (form.correctIndex >= form.options.length) form.correctIndex = 0;
+}
 </script>
 
 <template>
-  <section class="max-w-3xl mx-auto p-4 space-y-4">
-    <h1 class="text-2xl font-semibold">
-      {{ isEdit ? "Editar problema" : "Nuevo problema" }}
-    </h1>
+  <div class="max-w-3xl mx-auto p-4 space-y-4">
+    <h1 class="text-2xl font-semibold">{{ isEdit ? "Editar" : "Nuevo" }} problema</h1>
 
-    <div v-if="loading">Cargando…</div>
-    <p v-else-if="error" class="text-red-600">{{ error }}</p>
+    <div class="grid gap-3">
+      <label class="grid gap-1">
+        <span class="text-sm font-medium">Tipo</span>
+        <select v-model="form.type" class="border rounded p-2">
+          <option value="multiple-choice">Opción múltiple</option>
+          <option value="true-false">Verdadero/Falso</option>
+          <option value="numeric">Numérica</option>
+          <option value="open-ended">Respuesta abierta</option>
+        </select>
+      </label>
 
-    <form v-else class="space-y-4" @submit.prevent="save">
-      <div>
-        <label class="block text-sm font-medium mb-1">Título</label>
-        <input v-model="title" class="w-full border rounded px-3 py-2" placeholder="Ej: Suma básica" />
-      </div>
+      <label class="grid gap-1">
+        <span class="text-sm font-medium">Título</span>
+        <input v-model="form.title" class="border rounded p-2" />
+      </label>
 
-      <div>
-        <label class="block text-sm font-medium mb-1">Enunciado</label>
-        <textarea v-model="statement" class="w-full border rounded px-3 py-2" rows="3"
-          placeholder="Describe el problema…"></textarea>
-      </div>
+      <label class="grid gap-1">
+        <span class="text-sm font-medium">Enunciado</span>
+        <textarea v-model="form.statement" class="border rounded p-2 min-h-[120px]"></textarea>
+      </label>
 
-      <div>
-        <label class="block text-sm font-medium mb-2">Opciones</label>
+      <!-- Campos dinámicos -->
+      <div v-if="form.type==='multiple-choice' || form.type==='true-false'" class="space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium">Opciones</span>
+          <button
+            class="text-sm underline"
+            v-if="form.type==='multiple-choice'"
+            @click="addOption"
+          >
+            + opción
+          </button>
+        </div>
         <div class="space-y-2">
-          <div v-for="(opt, i) in options" :key="i" class="flex items-center gap-2">
-            <input type="radio" :value="i" v-model.number="correctIndex" :title="'Correcta: ' + i" />
-            <input v-model="options[i]" class="flex-1 border rounded px-3 py-2" :placeholder="`Opción ${i+1}`" />
-            <button type="button" class="px-2 py-1 border rounded" @click="removeOption(i)">Quitar</button>
+          <div
+            v-for="(opt, i) in form.options"
+            :key="i"
+            class="flex gap-2 items-center"
+          >
+            <input
+              v-model="form.options[i]"
+              class="border rounded p-2 flex-1"
+              :placeholder="`Opción ${i+1}`"
+            />
+            <label class="flex items-center gap-2 text-sm">
+              <input type="radio" name="correct" :value="i" v-model="form.correctIndex" />
+              Correcta
+            </label>
+            <button
+              v-if="form.type==='multiple-choice'"
+              class="text-sm text-red-600"
+              @click="removeOption(i)"
+            >
+              Eliminar
+            </button>
           </div>
         </div>
-        <button type="button" class="mt-2 px-3 py-1 border rounded" @click="addOption">+ Agregar opción</button>
-        <p class="text-xs text-gray-500 mt-1">Marca con el radio la alternativa correcta.</p>
       </div>
 
-      <div class="flex gap-2">
-        <button
-          type="submit"
-          class="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-60"
-          :disabled="saving"
-          @click.prevent="save"          
-        >
-          {{ isEdit ? "Guardar cambios" : "Crear problema" }}
-        </button>
-        <button type="button" class="px-4 py-2 border rounded" @click="router.back()">Cancelar</button>
+      <div v-else-if="form.type==='numeric'" class="grid gap-2">
+        <label class="grid gap-1">
+          <span class="text-sm font-medium">Respuesta correcta</span>
+          <input v-model="form.correctAnswer" class="border rounded p-2" placeholder="Ej. 3.14" />
+        </label>
+        <label class="grid gap-1">
+          <span class="text-sm font-medium">Tolerancia (opcional)</span>
+          <input
+            v-model.number="form.tolerance"
+            type="number"
+            step="any"
+            class="border rounded p-2"
+            placeholder="Ej. 0.01"
+          />
+        </label>
+      </div>
+
+      <div v-else class="grid gap-2">
+        <label class="grid gap-1">
+          <span class="text-sm font-medium">Respuesta de referencia (opcional)</span>
+          <textarea
+            v-model="form.correctAnswer"
+            class="border rounded p-2"
+            placeholder="Guía para el docente"
+          ></textarea>
+        </label>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <label class="grid gap-1">
+          <span class="text-sm font-medium">Etiquetas (coma)</span>
+          <input
+            v-model="form.tags"
+            class="border rounded p-2"
+            placeholder="porcentajes, descuentos..."
+          />
+        </label>
+        <label class="grid gap-1">
+          <span class="text-sm font-medium">Dificultad</span>
+          <select v-model="form.difficulty" class="border rounded p-2">
+            <option value="easy">Fácil</option>
+            <option value="medium">Media</option>
+            <option value="hard">Difícil</option>
+          </select>
+        </label>
       </div>
 
       <p v-if="error" class="text-red-600 text-sm">{{ error }}</p>
-    </form>
-  </section>
+
+      <div class="flex gap-3">
+        <button
+          @click="onSubmit"
+          :disabled="loading"
+          class="px-4 py-2 rounded bg-blue-600 text-white"
+        >
+          {{ loading ? "Guardando..." : "Guardar" }}
+        </button>
+        <button class="px-4 py-2 rounded border" @click="router.back()">Cancelar</button>
+      </div>
+    </div>
+  </div>
 </template>
-
-
-
 

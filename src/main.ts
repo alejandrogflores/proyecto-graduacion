@@ -4,10 +4,7 @@ import { createPinia } from "pinia";
 import App from "./App.vue";
 import router from "./router";
 
-
 import "./assets/tailwind.css";
-
-
 
 import { useProfileStore } from "@/stores/profile";
 
@@ -16,10 +13,12 @@ const pinia = createPinia();
 
 app.use(pinia).use(router);
 
-// inicia perfil
-useProfileStore(pinia).init();
+// inicializa perfil ANTES de montar la app
+const profile = useProfileStore(pinia);
+profile.init();
 
 app.mount("#app");
+
 
 
 
