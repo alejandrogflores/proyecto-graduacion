@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
 
 import {
@@ -34,6 +34,11 @@ const { ready } = storeToRefs(profile);
 // Política Opción A:
 const canEdit = () => profile.isTeacherOrAdmin;   // cualquier teacher/admin
 const canDelete = () => profile.role === "admin"; // solo admin
+
+// ✅ Mostrar respuestas solo a teacher/admin (y solo cuando el perfil ya cargó)
+const revealAnswers = computed(
+  () => ready.value && (profile.role === "teacher" || profile.role === "admin")
+);
 
 const loading = ref(true);
 const error = ref<string | null>(null);
@@ -179,8 +184,8 @@ async function removeRow(id: string) {
             <span class="inline-block min-w-6 font-mono">
               {{ String.fromCharCode(65 + i) }})
             </span>
-            <span :class="i === r.correctIndex ? 'font-semibold' : ''">
-              <span v-if="i === r.correctIndex">[✔] </span>
+            <span :class="revealAnswers && i === r.correctIndex ? 'font-semibold' : ''">
+              <span v-if="revealAnswers && i === r.correctIndex">[✔] </span>
               <span v-else>[ ] </span>
               {{ opt }}
             </span>
@@ -231,4 +236,5 @@ async function removeRow(id: string) {
 .options { list-style: none; padding-left: 0; margin-left: 0; }
 .options li::marker { content: ""; }
 </style>
+
 

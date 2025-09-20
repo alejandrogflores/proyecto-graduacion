@@ -1,23 +1,20 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import {
-  addDoc, setDoc, getDoc, serverTimestamp,
-} from "firebase/firestore";
+import { addDoc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
 import { colProblems, problemDoc, type Problem, auth } from "@/services/firebase";
-
-// Store de perfil (rol desde /users/{uid})
 import { useProfileStore } from "@/stores/profile";
-const profile = useProfileStore();
 
 const route = useRoute();
 const router = useRouter();
+const profile = useProfileStore();
 
 const id = computed(() => route.params.id as string | undefined);
 const isEdit = computed(() => !!id.value);
 
 const loading = ref(false);
-const error = ref<string | null>(null);
+const saving  = ref(false);                 // 👈 nuevo
+const error   = ref<string | null>(null);
 
 // modelo
 const title = ref("");
@@ -32,10 +29,6 @@ function removeOption(i: number) {
   if (correctIndex.value >= options.value.length) correctIndex.value = 0;
 }
 
-function normalizeOptions(arr: string[]) {
-  return arr.map(s => s.trim()).filter(s => s.length > 0);
-}
-
 async function load() {
   if (!isEdit.value) return;
   loading.value = true; error.value = null;
@@ -43,10 +36,9 @@ async function load() {
     const snap = await getDoc(problemDoc(id.value!));
     if (!snap.exists()) { error.value = "El problema no existe."; return; }
 
-    // Opción A: basta con ser teacher/admin para editar
+    // (opcional) si quieres bloquear edición para no-teachers aquí
     if (!profile.isTeacherOrAdmin) {
       error.value = "No tienes permisos para editar este problema.";
-      // toque opcional: redirección suave al listado
       setTimeout(() => router.push({ name: "ProblemsList" }), 1200);
       return;
     }
@@ -65,67 +57,47 @@ async function load() {
 }
 
 async function save() {
+  console.log("[SAVE] isEdit:", isEdit.value, "id:", id.value);
   error.value = null;
+  saving.value = true;
 
-  // 1) Asegura sesión
-  const user = auth.currentUser;
-  if (!user?.uid) {
-    error.value = "Sesión expirada. Vuelve a iniciar sesión.";
-    return;
-  }
-
-  // 2) Valida rol desde el STORE (no claims)
-  console.log("[DEBUG] role(store):", profile.role);
-  if (!profile.isTeacherOrAdmin) {
-    error.value = "Tu cuenta no tiene permisos (rol teacher/admin requerido).";
-    return;
-  }
-
-  // 3) Validaciones del formulario
-  const cleanOptions = normalizeOptions(options.value);
-  if (!title.value.trim()) { error.value = "Título requerido."; return; }
-  if (!statement.value.trim()) { error.value = "Enunciado requerido."; return; }
-  if (cleanOptions.length < 2) { error.value = "Mínimo 2 opciones válidas."; return; }
-  if (correctIndex.value < 0 || correctIndex.value >= cleanOptions.length) {
-    error.value = "Índice de respuesta correcta inválido."; return;
-  }
-
-  // 4) Construir payload
-  const payload: any = {
-    title: title.value.trim(),
-    statement: statement.value.trim(),
-    options: cleanOptions,
-    correctIndex: Number(correctIndex.value),
-  };
-  if (isEdit.value) {
-    payload.updatedAt = serverTimestamp();
-    // ❌ NO tocar createdBy/createdAt en edición
-  } else {
-    payload.createdAt = serverTimestamp();
-    payload.createdBy = user.uid; // ✅ requerido por reglas
-  }
-
-  // 5) Logs útiles
-  const printablePayload = JSON.parse(JSON.stringify(payload));
-  console.log("[DEBUG] isEdit:", isEdit.value);
-  console.log("[DEBUG] uid:", user.uid);
-  console.log("[DEBUG] payload (printable):", printablePayload);
-  console.log("[DEBUG] options.length / correctIndex:", cleanOptions.length, Number(correctIndex.value));
-
-  // 6) Escribir
-  loading.value = true;
   try {
-    if (isEdit.value) {
-      await setDoc(problemDoc(id.value!), payload as any, { merge: true });
+    // Normalización: sin vacíos, índice dentro de rango
+    const opts = options.value.map(o => o.trim()).filter(Boolean);
+    let ci = Number(correctIndex.value);
+    if (opts.length < 2) throw new Error("Debe haber al menos 2 opciones.");
+    if (ci < 0 || ci >= opts.length) ci = 0;
+
+    const base = {
+      title: title.value.trim(),
+      statement: statement.value.trim(),
+      options: opts,
+      correctIndex: ci,
+    };
+
+    if (!isEdit.value) {
+      const payload = {
+        ...base,
+        createdBy: auth.currentUser!.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      console.log("[SAVE][create] payload", payload);
+      await addDoc(colProblems, payload);
     } else {
-      await addDoc(colProblems, payload as any);
+      const payload = { ...base, updatedAt: serverTimestamp() };
+      const ref = problemDoc(id.value!);
+      console.log("[SAVE][update] ref", ref.path, "payload", payload);
+      await setDoc(ref, payload, { merge: true });
     }
+
+    console.log("[SAVE] OK");
     router.push({ name: "ProblemsList" });
   } catch (e: any) {
-    console.error("[DEBUG] Firestore write error:", e);
-    error.value = e?.message ?? "No se pudo guardar.";
+    console.error("[SAVE] error", e);
+    error.value = e?.message ?? String(e);
   } finally {
-    loading.value = false;
+    saving.value = false;
   }
 }
 
@@ -167,14 +139,22 @@ onMounted(load);
       </div>
 
       <div class="flex gap-2">
-        <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-60">
+        <button
+          type="submit"
+          class="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-60"
+          :disabled="saving"
+          @click.prevent="save"          
+        >
           {{ isEdit ? "Guardar cambios" : "Crear problema" }}
         </button>
         <button type="button" class="px-4 py-2 border rounded" @click="router.back()">Cancelar</button>
       </div>
+
+      <p v-if="error" class="text-red-600 text-sm">{{ error }}</p>
     </form>
   </section>
 </template>
+
 
 
 

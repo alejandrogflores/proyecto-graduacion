@@ -9,6 +9,9 @@ const route = useRoute();
 const router = useRouter();
 
 const profile = useProfileStore();
+// 👇 INICIALIZA SOLO SI AÚN NO ESTÁ LISTO (clave para que aparezca el badge)
+if (!profile.ready) profile.init();
+
 const { email, role, ready } = storeToRefs(profile);
 
 async function logout() {
@@ -32,21 +35,15 @@ async function logout() {
       <RouterLink to="/reports">Reportes</RouterLink>
 
       <div class="ml-auto flex items-center gap-3 text-sm text-gray-700">
-        <!-- Badge rol + correo -->
-        <span v-if="ready && role" class="px-2 py-0.5 rounded bg-gray-100 border">
+        <span v-if="ready && role" class="px-2 py-0.5 rounded bg-gray-100 border capitalize">
           {{ role }}
         </span>
         <span v-if="ready && email">{{ email }}</span>
 
-        <!-- Botón de Cerrar sesión -->
-        <button
-          class="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
-          @click="logout"
-        >
+        <button class="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700" @click="logout">
           Cerrar sesión
         </button>
       </div>
     </nav>
   </header>
 </template>
-
