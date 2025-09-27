@@ -1,0 +1,20 @@
+{
+  "projects": { "default": "proyecto-de-graduacion-f1265" },
+  "emulators": {
+    "auth":      { "host": "127.0.0.1", "port": 9099 },
+    "firestore": { "host": "127.0.0.1", "port": 8085 },
+    "functions": { "host": "127.0.0.1", "port": 5001 },
+    "ui":        { "enabled": true, "host": "127.0.0.1", "port": 4001 },
+    "hub":       { "host": "127.0.0.1", "port": 4401 },
+    "logging":   { "host": "127.0.0.1", "port": 4501 }
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "functions": { "source": "functions" }
+}
+
+
+
+
