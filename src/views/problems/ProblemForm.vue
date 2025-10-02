@@ -1,22 +1,27 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, reactive } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { addDoc, updateDoc, getDoc, serverTimestamp } from "firebase/firestore";
-import { auth, colProblems, problemDoc, type Problem } from "@/services/firebase";
+import { addDoc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
+import { auth, colProblems, problemDoc } from "@/services/firebase";
 
+import { withProblemDefaults, normalizeTags, type Problem } from "@/models/problem";
+
+
+// ---- Router / modo edición ----
 const route = useRoute();
 const router = useRouter();
-
 const isEdit = computed(() => !!route.params.id);
 const problemId = computed(() => String(route.params.id ?? ""));
 
+// ---- Estado general ----
 const loading = ref(false);
 const error = ref<string | null>(null);
 
-// ===== Modelo reactivo =====
-type Difficulty = Problem["difficulty"];
-type PType = Problem["type"];
+// ---- Control de versión (solo edición) ----
+const loadedVersion = ref<number>(1);
 
+// ---- Modelo principal (mantengo tu "form" reactivo) ----
+type PType = ProblemModel["type"]; // si tu modelo lo tiene
 const form = reactive<{
   type: PType;
   title: string;
@@ -25,8 +30,6 @@ const form = reactive<{
   correctIndex: number;
   correctAnswer: string;
   tolerance: number | null;
-  tags: string;
-  difficulty: Difficulty;
 }>({
   type: "multiple-choice",
   title: "",
@@ -35,36 +38,44 @@ const form = reactive<{
   correctIndex: 0,
   correctAnswer: "",
   tolerance: null,
-  tags: "",
-  difficulty: "easy",
 });
 
-onMounted(loadIfEdit);
+// ---- Campos NUEVOS de Fase 1 ----
+const tagsCsv = ref<string>(""); // entrada como "a, b, c"
+const selectedDifficulty = ref<Difficulty>("medium");
+const selectedVisibility = ref<Visibility>("public");
 
-async function loadIfEdit() {
+// ---- Cargar en modo edición ----
+onMounted(async () => {
   if (!isEdit.value) return;
   loading.value = true;
   try {
     const snap = await getDoc(problemDoc(problemId.value));
     if (!snap.exists()) throw new Error("No existe el problema");
-    const p = snap.data() as Problem;
+    const data = withProblemDefaults(snap.data());
 
-    form.type = p.type ?? "multiple-choice";
-    form.title = p.title ?? "";
-    form.statement = p.statement ?? "";
-    form.options = p.options ?? ["", "", "", ""];
-    form.correctIndex = p.correctIndex ?? 0;
-    form.correctAnswer = p.correctAnswer ?? "";
-    form.tolerance = (p as any).tolerance ?? null;
-    form.tags = (p.topicTags ?? []).join(", ");
-    form.difficulty = p.difficulty ?? "easy";
+    // core
+    form.type = (data as any).type ?? "multiple-choice";
+    form.title = data.title ?? "";
+    form.statement = data.statement ?? "";
+    form.options = Array.isArray(data.options) ? data.options : ["", "", "", ""];
+    form.correctIndex = Number.isFinite(data.correctIndex) ? data.correctIndex : 0;
+    form.correctAnswer = (data as any).correctAnswer ?? "";
+    form.tolerance = (data as any).tolerance ?? null;
+
+    // nuevos
+    tagsCsv.value = (data.tags ?? []).join(", ");
+    selectedDifficulty.value = data.difficulty ?? "medium";
+    selectedVisibility.value = data.visibility ?? "public";
+    loadedVersion.value = data.version ?? 1;
   } catch (e: any) {
-    error.value = e.message;
+    error.value = e?.message ?? String(e);
   } finally {
     loading.value = false;
   }
-}
+});
 
+// ---- Validación mínima ----
 function validate(): string | null {
   if (!form.title.trim()) return "Falta el título.";
   if (!form.statement.trim()) return "Falta el enunciado.";
@@ -84,10 +95,10 @@ function validate(): string | null {
   if (form.type === "numeric" && !form.correctAnswer.trim()) {
     return "Numérica requiere la respuesta correcta.";
   }
-
   return null;
 }
 
+// ---- Guardar (crear/editar) ----
 async function onSubmit() {
   const v = validate();
   if (v) {
@@ -95,46 +106,51 @@ async function onSubmit() {
     return;
   }
 
-  const base = {
+  // base común para Firestore
+  const base: Partial<ProblemModel> & Record<string, any> = {
+    // core
     type: form.type,
     title: form.title.trim(),
     statement: form.statement.trim(),
     options: form.options,
     correctIndex: form.correctIndex,
-    tags: form.tags,
-    difficulty: form.difficulty,
+    correctAnswer: form.correctAnswer,
+    tolerance: form.tolerance,
+
+    // Fase 1: nuevos
+    tags: normalizeTags(tagsCsv.value),
+    difficulty: selectedDifficulty.value,
+    visibility: selectedVisibility.value,
+    version: isEdit.value ? (loadedVersion.value ?? 1) + 1 : 1,
+
+    // timestamps
     updatedAt: serverTimestamp(),
   };
 
   try {
     if (isEdit.value) {
-      await updateDoc(problemDoc(problemId.value), base);
+      // setDoc(..., {merge:true}) permite añadir/actualizar campos nuevos sin perder otros
+      await setDoc(problemDoc(problemId.value), base, { merge: true });
     } else {
-      // logs para verificar el uid
-      console.log("[create] payload", {
-        ...base,
-        createdBy: auth.currentUser?.uid,
-      });
-      console.log("[create] uid", auth.currentUser?.uid);
-
       await addDoc(colProblems, {
         ...base,
-        createdBy: auth.currentUser?.uid ?? null, // 👈 requerido por reglas
+        createdBy: auth.currentUser?.uid ?? null, // si tus reglas lo requieren
         createdAt: serverTimestamp(),
       });
     }
 
+    // Ajusta el nombre de la ruta a tu lista real
     router.push({ name: "ProblemsList" });
   } catch (e: any) {
-    error.value = e.message;
+    error.value = e.message ?? String(e);
   }
 }
 
+// ---- utilidades UI ----
 function addOption() {
   if (form.type !== "multiple-choice") return;
   form.options.push("");
 }
-
 function removeOption(i: number) {
   if (form.options.length <= 2) return;
   form.options.splice(i, 1);
@@ -147,6 +163,7 @@ function removeOption(i: number) {
     <h1 class="text-2xl font-semibold">{{ isEdit ? "Editar" : "Nuevo" }} problema</h1>
 
     <div class="grid gap-3">
+      <!-- Tipo -->
       <label class="grid gap-1">
         <span class="text-sm font-medium">Tipo</span>
         <select v-model="form.type" class="border rounded p-2">
@@ -157,11 +174,13 @@ function removeOption(i: number) {
         </select>
       </label>
 
+      <!-- Título -->
       <label class="grid gap-1">
         <span class="text-sm font-medium">Título</span>
         <input v-model="form.title" class="border rounded p-2" />
       </label>
 
+      <!-- Enunciado -->
       <label class="grid gap-1">
         <span class="text-sm font-medium">Enunciado</span>
         <textarea v-model="form.statement" class="border rounded p-2 min-h-[120px]"></textarea>
@@ -171,20 +190,12 @@ function removeOption(i: number) {
       <div v-if="form.type==='multiple-choice' || form.type==='true-false'" class="space-y-2">
         <div class="flex items-center justify-between">
           <span class="text-sm font-medium">Opciones</span>
-          <button
-            class="text-sm underline"
-            v-if="form.type==='multiple-choice'"
-            @click="addOption"
-          >
+          <button class="text-sm underline" v-if="form.type==='multiple-choice'" @click="addOption">
             + opción
           </button>
         </div>
         <div class="space-y-2">
-          <div
-            v-for="(opt, i) in form.options"
-            :key="i"
-            class="flex gap-2 items-center"
-          >
+          <div v-for="(opt, i) in form.options" :key="i" class="flex gap-2 items-center">
             <input
               v-model="form.options[i]"
               class="border rounded p-2 flex-1"
@@ -233,21 +244,33 @@ function removeOption(i: number) {
         </label>
       </div>
 
+      <!-- NUEVOS: Fase 1 -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium mb-1">Tags (separados por comas)</label>
+        <input
+          v-model="tagsCsv"
+          type="text"
+          class="border rounded w-full p-2"
+          placeholder="algebra, porcentajes, razonamiento"
+        />
+        <p class="text-xs text-gray-500 mt-1">Se guardan en minúsculas y sin duplicados.</p>
+      </div>
+
       <div class="grid grid-cols-2 gap-3">
         <label class="grid gap-1">
-          <span class="text-sm font-medium">Etiquetas (coma)</span>
-          <input
-            v-model="form.tags"
-            class="border rounded p-2"
-            placeholder="porcentajes, descuentos..."
-          />
-        </label>
-        <label class="grid gap-1">
           <span class="text-sm font-medium">Dificultad</span>
-          <select v-model="form.difficulty" class="border rounded p-2">
+          <select v-model="selectedDifficulty" class="border rounded p-2">
             <option value="easy">Fácil</option>
             <option value="medium">Media</option>
             <option value="hard">Difícil</option>
+          </select>
+        </label>
+        <label class="grid gap-1">
+          <span class="text-sm font-medium">Visibilidad</span>
+          <select v-model="selectedVisibility" class="border rounded p-2">
+            <option value="public">Pública</option>
+            <option value="private">Privada</option>
+            <option value="archived">Archivada</option>
           </select>
         </label>
       </div>

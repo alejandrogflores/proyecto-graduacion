@@ -1,19 +1,32 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import {
   query,
+  where,
   orderBy,
-  onSnapshot,
+  limit,
+  getDocs,
   deleteDoc,
-  type DocumentData,
-  type QuerySnapshot,
+  Timestamp,
 } from "firebase/firestore";
-import { colProblems, problemDoc } from "@/services/firebase";
+import { colProblems, colTags, problemDoc } from "@/services/firebase";
 import { useProfileStore } from "@/stores/profile";
 import { storeToRefs } from "pinia";
 
-type Row = {
+// --- Perfil / permisos ---
+const profile = useProfileStore();
+const { ready, role, uid } = storeToRefs(profile);
+const canManage = computed(() => role.value === "teacher" || role.value === "admin");
+const revealAnswers = computed(() => ready.value && canManage.value);
+
+// --- Estado UI ---
+const router = useRouter();
+const loading = ref(false);
+const error = ref<string | null>(null);
+
+// --- Datos ---
+type Problem = {
   id: string;
   title: string;
   statement: string;
@@ -22,39 +35,20 @@ type Row = {
   createdAt?: any;
   updatedAt?: any;
   createdBy?: string | null;
+  tags?: string[];
+  difficulty?: "easy" | "medium" | "hard";
+  visibility?: "public" | "private" | "archived";
+  version?: number;
 };
 
-const router = useRouter();
+const problems = ref<Problem[]>([]);
+const pageSize = 20;
 
-// ===== Perfil (reactivo) =====
-const profile = useProfileStore();
-const { ready, role, uid } = storeToRefs(profile); // 👈 como pediste
+const tags = ref<{ slug: string; name: string }[]>([]);
+const selectedTag = ref<string | null>(null);
+const selectedDifficulty = ref<"easy" | "medium" | "hard" | null>(null);
 
-const canManage = computed(() => role.value === "teacher" || role.value === "admin");
-const revealAnswers = computed(() => ready.value && canManage.value);
-
-const loading = ref(true);
-const error = ref<string | null>(null);
-const rows = ref<Row[]>([]);
-let off: (() => void) | null = null;
-
-function looksLikeJsonArray(s: string) {
-  const t = s.trim();
-  return t.startsWith("[") && t.endsWith("]");
-}
-function coerceOptions(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.map(String);
-  if (typeof raw === "string" && looksLikeJsonArray(raw)) {
-    try {
-      const p = JSON.parse(raw);
-      return Array.isArray(p) ? p.map(String) : [raw];
-    } catch {
-      return [raw];
-    }
-  }
-  if (typeof raw === "string") return [raw];
-  return [];
-}
+// --- Utils ---
 function fmtTs(ts: any): string {
   try {
     if (!ts) return "—";
@@ -66,48 +60,49 @@ function fmtTs(ts: any): string {
   }
 }
 
-onMounted(() => {
+// --- Cargas ---
+async function loadTags() {
+  const snap = await getDocs(colTags);
+  tags.value = snap.docs.map((d) => ({ slug: d.data().slug, name: d.data().name }));
+}
+
+async function loadProblems() {
   loading.value = true;
   error.value = null;
-  const qRef = (() => {
-    try {
-      return query(colProblems, orderBy("createdAt", "desc"));
-    } catch {
-      return query(colProblems);
-    }
-  })();
-  off = onSnapshot(
-    qRef,
-    (snap: QuerySnapshot<DocumentData>) => {
-      rows.value = snap.docs.map((d) => {
-        const data = d.data() as any;
-        const options = coerceOptions(data.options);
-        let correctIndex = Number.isInteger(data.correctIndex) ? data.correctIndex : 0;
-        if (correctIndex < 0 || correctIndex >= options.length) correctIndex = 0;
-        return {
-          id: d.id,
-          title: data.title ?? "",
-          statement: data.statement ?? "",
-          options,
-          correctIndex,
-          createdAt: data.createdAt ?? null,
-          updatedAt: data.updatedAt ?? null,
-          createdBy: data.createdBy ?? null,
-        };
-      });
-      loading.value = false;
-    },
-    (e) => {
-      console.error("[snapshot] error:", e);
-      error.value = e?.message ?? "No se pudieron cargar los problemas.";
-      loading.value = false;
-    }
-  );
-});
-onBeforeUnmount(() => {
-  if (off) off();
-});
+  try {
+    const conds: any[] = [where("visibility", "==", "public")];
+    if (selectedTag.value) conds.push(where("tags", "array-contains", selectedTag.value));
+    if (selectedDifficulty.value) conds.push(where("difficulty", "==", selectedDifficulty.value));
 
+    // Nota: si no tienes createdAt, quita el orderBy o pon fallback
+    const qRef = query(colProblems, ...conds, orderBy("createdAt", "desc"), limit(pageSize));
+    const snap = await getDocs(qRef);
+    problems.value = snap.docs.map(
+      (d) =>
+        ({
+          id: d.id,
+          ...d.data(),
+          // defaults seguros
+          tags: d.data().tags ?? [],
+          difficulty: d.data().difficulty ?? "medium",
+          visibility: d.data().visibility ?? "public",
+          version: d.data().version ?? 1,
+          options: Array.isArray(d.data().options) ? d.data().options : [],
+          correctIndex:
+            Number.isInteger(d.data().correctIndex) && d.data().correctIndex >= 0
+              ? d.data().correctIndex
+              : 0,
+        } as Problem)
+    );
+  } catch (e: any) {
+    console.error(e);
+    error.value = e?.message ?? "No se pudieron cargar los problemas.";
+  } finally {
+    loading.value = false;
+  }
+}
+
+// --- Navegación / acciones ---
 function goCreate() {
   router.push({ name: "ProblemNew" });
 }
@@ -118,6 +113,7 @@ async function removeRow(id: string) {
   if (!confirm("¿Eliminar este problema? (solo admin)")) return;
   try {
     await deleteDoc(problemDoc(id));
+    await loadProblems(); // refrescar
   } catch (e: any) {
     console.error(e);
     alert(
@@ -127,6 +123,13 @@ async function removeRow(id: string) {
     );
   }
 }
+
+// --- Lifecycle ---
+onMounted(async () => {
+  await loadTags();
+  await loadProblems();
+});
+watch([selectedTag, selectedDifficulty], loadProblems);
 </script>
 
 <template>
@@ -142,15 +145,51 @@ async function removeRow(id: string) {
       </button>
     </header>
 
+    <!-- Filtros -->
+    <div class="flex gap-3 items-center mb-4">
+      <select v-model="selectedTag" class="border rounded px-3 py-2">
+        <option :value="null">Todos los tags</option>
+        <option v-for="t in tags" :key="t.slug" :value="t.slug">{{ t.name }}</option>
+      </select>
+
+      <select v-model="selectedDifficulty" class="border rounded px-3 py-2">
+        <option :value="null">Todas las dificultades</option>
+        <option value="easy">Fácil</option>
+        <option value="medium">Media</option>
+        <option value="hard">Difícil</option>
+      </select>
+
+      <button class="border rounded px-3 py-2" @click="loadProblems">Aplicar</button>
+    </div>
+
     <p v-if="!ready" class="text-gray-600">Cargando perfil…</p>
     <p v-else-if="loading">Cargando…</p>
     <p v-else-if="error" class="text-red-600">{{ error }}</p>
 
     <div v-else class="space-y-4">
-      <article v-for="p in rows" :key="p.id" class="border rounded-lg p-4 mb-4">
-        <h2 class="font-medium text-lg">{{ p.title }}</h2>
-        <p class="text-sm text-gray-600 mb-3">{{ p.statement }}</p>
+      <article v-for="p in problems" :key="p.id" class="border rounded-lg p-4 mb-4">
+        <div class="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h2 class="font-medium text-lg">{{ p.title }}</h2>
+            <p class="text-sm text-gray-600 mb-2">{{ p.statement }}</p>
+          </div>
 
+          <!-- Badges -->
+          <div class="flex items-center gap-2">
+            <span class="text-xs bg-gray-100 px-2 py-1 rounded">{{ p.difficulty }}</span>
+            <span class="text-xs bg-gray-100 px-2 py-1 rounded">{{ p.visibility }}</span>
+            <span class="text-xs text-gray-500">v{{ p.version }}</span>
+          </div>
+        </div>
+
+        <!-- Tags -->
+        <div class="flex flex-wrap gap-1 mb-3">
+          <span v-for="t in p.tags" :key="t" class="text-xs bg-blue-50 px-2 py-0.5 rounded">
+            {{ t }}
+          </span>
+        </div>
+
+        <!-- Opciones (solo teachers/admin) -->
         <ul v-if="revealAnswers" class="text-sm text-gray-700 mb-3">
           <li v-for="(opt, i) in p.options" :key="i">
             {{ String.fromCharCode(65 + i) }}) {{ opt }}
@@ -159,20 +198,24 @@ async function removeRow(id: string) {
         </ul>
 
         <div class="flex gap-2">
-          <router-link
-            class="px-3 py-1 rounded border"
-            :to="{ name: 'ProblemSolve', params: { id: p.id } }"
-          >
+          <router-link class="px-3 py-1 rounded border" :to="{ name: 'ProblemSolve', params: { id: p.id } }">
             Resolver
           </router-link>
 
-          <!-- ✅ condición pedida -->
           <button
-            v-if="canManage || p.createdBy === profile.uid"
+            v-if="canManage || p.createdBy === uid"
             class="px-3 py-1 rounded bg-amber-500 text-white"
             @click="goEdit(p.id)"
           >
             Editar
+          </button>
+
+          <button
+            v-if="role === 'admin'"
+            class="px-3 py-1 rounded bg-red-600 text-white"
+            @click="removeRow(p.id)"
+          >
+            Eliminar
           </button>
         </div>
 
@@ -181,11 +224,8 @@ async function removeRow(id: string) {
         </p>
       </article>
 
-      <p v-if="rows.length === 0 && !loading" class="text-gray-600">Aún no hay problemas.</p>
+      <p v-if="problems.length === 0 && !loading" class="text-gray-600">Aún no hay problemas.</p>
     </div>
   </section>
 </template>
-
-
-
 

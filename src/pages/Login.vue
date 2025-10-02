@@ -1,39 +1,54 @@
+<!-- src/views/Login.vue (o src/pages/Login.vue) -->
 <template>
-  <main style="max-width:420px;margin:40px auto;text-align:center">
-    <h1>Iniciar Sesión</h1>
-    <p>Autentícate para continuar</p>
-    <button @click="loginWithGoogle">Continuar con Google</button>
-    <p v-if="err" style="color:#b00;margin-top:10px">{{ err }}</p>
-  </main>
+  <div class="min-h-screen grid place-items-center bg-gray-50">
+    <div class="w-full max-w-sm rounded-2xl shadow p-6 bg-white space-y-4">
+      <h1 class="text-2xl font-semibold text-center">Iniciar sesión</h1>
+
+      <button
+        class="w-full border rounded-lg py-2 hover:bg-gray-100"
+        @click="login"
+      >
+        Continuar con Google
+      </button>
+
+      <p class="text-xs text-gray-500 text-center">
+        Te enviaremos a {{ nextPath || '/' }} luego de iniciar sesión.
+      </p>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { auth } from '../services/firebase';
-import { GoogleAuthProvider, signInWithPopup, signInWithRedirect } from 'firebase/auth';
-import { useRoute } from 'vue-router';
-import { ensureUserDocument } from '../services/usersRepo';
+import { computed } from "vue";
+import { useRouter, useRoute } from "vue-router";
+import { auth } from "@/services/firebase";
+import { GoogleAuthProvider, signInWithPopup, signInWithRedirect } from "firebase/auth";
 
+const router = useRouter();
 const route = useRoute();
 
-async function loginWithGoogle() {
-  const provider = new GoogleAuthProvider();
+const provider = new GoogleAuthProvider();
+const LS_KEY = "postLoginRedirect";
+const nextPath = computed(() => (route.query.redirect as string) || "/");
+
+async function login() {
+  const dest = nextPath.value || "/";
+  localStorage.setItem(LS_KEY, dest); // <- el main.ts lo leerá tras el login
+
   try {
-    const res = await signInWithPopup(auth, provider);
-    if (res.user) {
-      await ensureUserDocument(res.user); // 👈 crea/actualiza /users/{uid}
-    }
-  } catch (e: any) {
-    if (e?.code === 'auth/popup-blocked' || e?.code === 'auth/operation-not-supported-in-this-environment') {
+    if (import.meta.env.DEV) {
+      // En desarrollo evita recargar la SPA
+      await signInWithPopup(auth, provider);
+      // El listener en main.ts hará el redirect; por si acaso, también lo disparamos aquí:
+      router.replace(dest).catch(() => {});
+    } else {
       await signInWithRedirect(auth, provider);
-      return;
+      // Al volver del redirect, main.ts hará el redirect usando LS_KEY
     }
-    console.error(e);
+  } catch (e) {
+    console.error("[Login] error:", e);
   }
-  const redirect = (route.query.redirect as string) || '/';
-  window.location.href = redirect;
 }
 </script>
-
-
 
 

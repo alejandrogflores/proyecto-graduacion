@@ -1,53 +1,14 @@
-// rules_version = '2';
 rules_version = '2';
 service cloud.firestore {
-  match /databases/{db}/documents {
-
-    function isSignedIn() { return request.auth != null; }
-
-    // Si luego añades custom claims, estas helpers te servirán:
-    function role() {
-      return isSignedIn() && request.auth.token.role != null
-        ? request.auth.token.role
-        : "student";
-    }
-    function isTeacher() { return role() == "teacher" || role() == "admin"; }
-
-    // ------- users: cada quien puede leer/escribir SU documento -------
-    match /users/{uid} {
-      allow read, write: if isSignedIn() && uid == request.auth.uid;
-    }
-
-    // ------- problems: lectura pública; escritura solo autenticados (DEV) -------
-    // (Cuando tengas claims, cambia create/update para requerir isTeacher())
-    match /problems/{id} {
-      allow read: if true;
-
-      // DEV: permitir a cualquier autenticado crear/editar
-      allow create: if isSignedIn();
-      allow update: if isSignedIn() &&
-                    // si guardas createdBy, deja editar al autor
-                    (resource.data.createdBy == request.auth.uid || role() == "admin");
-
-      // Borra solo admin (cuando tengas claims) — por ahora lo dejo así,
-      // si no tienes claims esto siempre será "false" y nadie borra (mejor).
-      allow delete: if role() == "admin";
-    }
-
-    // ------- attempts: el alumno crea sus intentos; profe/admin puede leer -------
-    match /attempts/{id} {
-      // Crea solo si el intento es del propio usuario
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-
-      // Leer: propio intento o rol docente (cuando tengas claims)
-      allow read: if isSignedIn() &&
-                  (resource.data.uid == request.auth.uid || isTeacher());
-
-      // No se actualizan ni se borran intentos
-      allow update, delete: if false;
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true; // ⚠️ solo en emulador
     }
   }
 }
+
+
+
 
 
 

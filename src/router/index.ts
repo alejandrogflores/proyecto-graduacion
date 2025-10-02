@@ -4,7 +4,6 @@ import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/services/firebase";
 import { useProfileStore } from "@/stores/profile";
 
-// ===== Importes ESTÁTICOS =====
 import Login from "@/views/Login.vue";
 import Dashboard from "@/views/Dashboard.vue";
 import ProblemsList from "@/views/problems/ProblemsList.vue";
@@ -13,28 +12,33 @@ import SolveProblem from "@/views/solve/SolveProblem.vue";
 import Reports from "@/views/reports/Reports.vue";
 import AttemptsView from "@/views/AttemptsView.vue";
 import AdminTools from "@/views/AdminTools.vue";
-import { onlyAuth, onlyTeacher, onlyStaff, onlyAdmin } from "@/router/routeMeta";
+import { onlyAuth, onlyTeacher, onlyStaff } from "@/router/routeMeta";
+import MyAssignments from "@/views/assignments/MyAssignments.vue";
 
+const LS_KEY = "postLoginRedirect";
 
 const routes: RouteRecordRaw[] = [
   { path: "/login", name: "Login", component: Login, meta: { hideHeader: true } },
 
   { path: "/", name: "Dashboard", component: Dashboard, meta: onlyAuth() },
-
   { path: "/problems", name: "ProblemsList", component: ProblemsList, meta: onlyAuth() },
-
   { path: "/problems/new", name: "ProblemNew", component: ProblemForm, meta: onlyTeacher() },
-
   { path: "/problems/:id/solve", name: "ProblemSolve", component: SolveProblem, props: true, meta: onlyAuth() },
-
   { path: "/problems/:id", name: "ProblemEdit", component: ProblemForm, props: true, meta: onlyTeacher() },
-
   { path: "/reports", name: "Reports", component: Reports, meta: onlyAuth() },
-
   { path: "/teacher/:problemId?", name: "AttemptsView", component: AttemptsView, props: true, meta: onlyTeacher() },
-
-  // Admin tools → solo teacher o admin
   { path: "/admin-tools", name: "admin-tools", component: AdminTools, meta: onlyStaff() },
+
+  { path: "/classes", name: "classes", component: () => import("@/views/classes/ClassesList.vue"), meta: onlyAuth() },
+  { path: "/classes/:id/assignments", name: "assignmentsByClass", component: () => import("@/views/assignments/AssignmentsByClass.vue"), meta: onlyAuth() },
+
+  //{ path: "/assignments/my", name: "MyAssignments", component: MyAssignments, meta: onlyAuth() },
+  {
+  path: "/assignments/my",
+  name: "MyAssignments",
+  component: () => import("@/views/assignments/MyAssignments.vue"),
+  meta: onlyAuth(),
+},
 
   { path: "/:pathMatch(.*)*", redirect: "/" },
 ];
@@ -45,7 +49,7 @@ const router = createRouter({
   scrollBehavior: () => ({ top: 0 }),
 });
 
-// ===== Helpers =====
+// ==== Helpers
 function waitForAuthInit(): Promise<void> {
   return new Promise<void>((resolve) => {
     const off = onAuthStateChanged(auth, () => {
@@ -61,7 +65,6 @@ async function waitForProfileReady(): Promise<void> {
     try { profile.init(); } catch {}
   }
   if (profile.ready) return;
-
   await new Promise<void>((resolve) => {
     let elapsed = 0;
     const iv = setInterval(() => {
@@ -74,39 +77,64 @@ async function waitForProfileReady(): Promise<void> {
   });
 }
 
-// ===== Guard principal =====
+function consumePostLoginRedirect(currentPath: string): string | null {
+  const stored = localStorage.getItem(LS_KEY);
+  if (!stored) return null;
+  // evita bucle
+  if (stored !== currentPath) {
+    localStorage.removeItem(LS_KEY);
+    return stored;
+  }
+  localStorage.removeItem(LS_KEY);
+  return null;
+}
+
+// ==== Guard
 router.beforeEach(async (to, _from, next) => {
-  const requiresAuth = to.matched.some((r) => r.meta?.requiresAuth === true);
-  const requiresTeacher = to.matched.some((r) => (r.meta as any)?.requiresTeacher === true);
-  const rolesMeta = to.matched.find((r) => (r.meta as any)?.roles)?.meta?.roles as string[] | undefined;
+  const requiresAuth   = to.matched.some((r) => r.meta?.requiresAuth === true);
+  const requiresTeacher= to.matched.some((r) => (r.meta as any)?.requiresTeacher === true);
+  const rolesMeta      = to.matched.find((r) => (r.meta as any)?.roles)?.meta?.roles as string[] | undefined;
 
-  // Rutas públicas (sin auth ni roles)
-  if (!requiresAuth && !requiresTeacher && !rolesMeta) return next();
-
-  // Espera estado inicial de Firebase Auth
-  await waitForAuthInit();
-
-  // Si va a /login ya autenticado → Dashboard
-  if (to.name === "Login" && auth.currentUser) {
-    return next({ name: "Dashboard" });
+  // Rutas públicas
+  if (!requiresAuth && !requiresTeacher && !rolesMeta) {
+    // Si ya logueado y abre /login, respeta redirect (query o LS)
+    if (to.name === "Login" && auth.currentUser) {
+      const fromLS = consumePostLoginRedirect(to.fullPath);
+      if (fromLS) return next(fromLS);
+      const q = (to.query?.redirect as string) || "/";
+      return next(q);
+    }
+    return next();
   }
 
-  // Si requiere auth y no hay usuario → Login
+  // Espera Auth
+  await waitForAuthInit();
+
+  // Si hay user y redirect pendiente, aplícalo desde cualquier ruta
+  if (auth.currentUser) {
+    const fromLS = consumePostLoginRedirect(to.fullPath);
+    if (fromLS) return next(fromLS);
+  }
+
+  // Si requiere auth y no hay user → /login con redirect
   if ((requiresAuth || requiresTeacher || rolesMeta) && !auth.currentUser) {
     return next({ name: "Login", query: { redirect: to.fullPath } });
   }
 
-  // Asegura que el store tenga el role listo
+  // Si voy a /login estando logueado, respeta ?redirect
+  if (to.name === "Login" && auth.currentUser) {
+    const q = (to.query?.redirect as string) || "/";
+    return next(q);
+  }
+
+  // Roles
   await waitForProfileReady();
   const profile = useProfileStore();
-  const role = profile.role; // "student" | "teacher" | "admin" | null
+  const role = profile.role;
 
-  // Si hay restricción de roles explícitos (via onlyStaff / onlyAdmin)
   if (rolesMeta && (!role || !rolesMeta.includes(role))) {
     return next({ name: "Dashboard" });
   }
-
-  // Si la ruta marcó requiresTeacher (teacher o admin)
   if (requiresTeacher && !(role === "teacher" || role === "admin")) {
     return next({ name: "Dashboard" });
   }
@@ -115,4 +143,7 @@ router.beforeEach(async (to, _from, next) => {
 });
 
 export default router;
+
+
+
 

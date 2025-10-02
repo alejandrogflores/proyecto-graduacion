@@ -4,12 +4,22 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node -e \"console.log(process.version,'@',process.execPath)\" && vite",
+    "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+
+    "emu": "firebase emulators:start --project proyecto-de-graduacion-f1265 --only firestore,auth --import=firebase-export --export-on-exit",
+    "emu:fs": "firebase emulators:start --project proyecto-de-graduacion-f1265 --only firestore --import=firebase-export --export-on-exit",
+    "emu:stop": "firebase emulators:exec --project proyecto-de-graduacion-f1265 --only firestore,auth \"echo stopped\"",
+
+    "seed": "node scripts/seed-edu-admin.mjs",
+
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "firebase": "^12.2.1",
+    "firebase-admin": "^13.5.0",
     "pinia": "^3.0.3",
     "vue": "^3.5.18",
     "vue-router": "^4.5.1"

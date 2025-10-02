@@ -32,6 +32,7 @@ const profile = useProfileStore();
         <p class="text-sm text-slate-600">Ver alumnos y detalles</p>
       </RouterLink>
     </div>
+    
   </section>
 </template>
 
