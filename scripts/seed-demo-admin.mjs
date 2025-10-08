@@ -1,13 +1,13 @@
-﻿// scripts/seed-demo-admin.mjs
+// scripts/seed-demo-admin.mjs
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 
-// Los emuladores se detectan por estas variables de entorno:
+// Con emuladores, basta con tener los env vars:
 // FIRESTORE_EMULATOR_HOST=127.0.0.1:8085
 // FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
 
-initializeApp({ projectId: "demo-seed" }); // con emuladores no necesitas credenciales
+initializeApp({ projectId: "proyecto-de-graduacion-f1265" });
 
 const db = getFirestore();
 const auth = getAuth();
@@ -26,7 +26,6 @@ async function ensureUser(email, password, displayName) {
 }
 
 async function main() {
-  // 1) Usuarios en Auth + docs en /users
   const studentUid = await ensureUser("student@demo.test", "123456", "Alumno Demo");
   const teacherUid = await ensureUser("teacher@demo.test", "123456", "Profesor Demo");
 
@@ -46,7 +45,6 @@ async function main() {
     lastSeen: FieldValue.serverTimestamp(),
   }, { merge: true });
 
-  // 2) Problemas
   await db.doc("problems/p1").set({
     title: "Multiplicación",
     statement: "¿Cuánto es 3 × 4?",
@@ -65,14 +63,13 @@ async function main() {
     createdAt: FieldValue.serverTimestamp(),
   });
 
-  // 3) Asignación (campos que usa tu MyAssignments.vue)
   await db.doc("assignments/a1").set({
     title: "Quiz 1",
     classId: "c1",
     ownerUid: teacherUid,
-    published: true,               // <- where("published","==",true)
-    assigneeUids: [studentUid],    // <- where("assigneeUids","array-contains",uid)
-    startsAt: FieldValue.serverTimestamp(), // <- orderBy("startsAt","desc")
+    published: true,
+    assigneeUids: [studentUid],
+    startsAt: FieldValue.serverTimestamp(),
     endsAt: FieldValue.serverTimestamp(),
     problemIds: ["p1","p2"],
     createdAt: FieldValue.serverTimestamp(),
@@ -86,4 +83,3 @@ main().catch((e) => {
   console.error(e);
   process.exit(1);
 });
-

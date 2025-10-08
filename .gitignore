@@ -1,34 +1,37 @@
+# Node / build
+node_modules/
+dist/
+.vite/
+coverage/
+
 # Logs
-logs
-*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
+*.log
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+# IDE / OS
+.vscode/
+.idea/
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+Thumbs.db
 
-# Environment
-.env
-
-# Firebase emulator / debug
+# Firebase (emuladores & export)
 .firebase/
 firebase-debug.log
-storage_debug.log
+ui-debug.log
+.firebaserc.local
+firestore_export/
+**/emulator-data/
+**/local_emulator/
+
+# Entornos
+.env
+.env.*
+!.env.example
+
+# TypeScript (opcional)
+*.tsbuildinfo
 
 

@@ -7,13 +7,13 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-
-    "emu": "firebase emulators:start --project proyecto-de-graduacion-f1265 --only firestore,auth --import=firebase-export --export-on-exit",
-    "emu:fs": "firebase emulators:start --project proyecto-de-graduacion-f1265 --only firestore --import=firebase-export --export-on-exit",
+    "rules:dev": "copy /Y firestore.rules.dev firestore.rules",
+    "rules:prod": "git restore --source=HEAD --worktree --staged -- firestore.rules",
+    "emu:dev": "npm run rules:dev && npx firebase emulators:start --project proyecto-de-graduacion-f1265 --only firestore,auth --import=firebase-export --export-on-exit",
+    "emu": "firebase emulators:start --only firestore,auth --import ./.emudata --export-on-exit",
+    "emu:fs:dev": "npm run rules:dev && npx firebase emulators:start --project proyecto-de-graduacion-f1265 --only firestore --import=firebase-export --export-on-exit",
     "emu:stop": "firebase emulators:exec --project proyecto-de-graduacion-f1265 --only firestore,auth \"echo stopped\"",
-
-    "seed": "node scripts/seed-edu-admin.mjs",
-
+    "seed": "node scripts/seed-demo-admin.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

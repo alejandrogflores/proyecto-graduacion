@@ -13,7 +13,9 @@ import Reports from "@/views/reports/Reports.vue";
 import AttemptsView from "@/views/AttemptsView.vue";
 import AdminTools from "@/views/AdminTools.vue";
 import { onlyAuth, onlyTeacher, onlyStaff } from "@/router/routeMeta";
-import MyAssignments from "@/views/assignments/MyAssignments.vue";
+
+// 👇 nuevo guard de reintentos
+import { onlyNotFinished } from "@/router/guards/onlyNotFinished";
 
 const LS_KEY = "postLoginRedirect";
 
@@ -32,15 +34,25 @@ const routes: RouteRecordRaw[] = [
   { path: "/classes", name: "classes", component: () => import("@/views/classes/ClassesList.vue"), meta: onlyAuth() },
   { path: "/classes/:id/assignments", name: "assignmentsByClass", component: () => import("@/views/assignments/AssignmentsByClass.vue"), meta: onlyAuth() },
 
-  //{ path: "/assignments/my", name: "MyAssignments", component: MyAssignments, meta: onlyAuth() },
-  {
-  path: "/assignments/my",
-  name: "MyAssignments",
-  component: () => import("@/views/assignments/MyAssignments.vue"),
-  meta: onlyAuth(),
-},
+  { path: "/assignments/my", name: "MyAssignments", component: () => import("@/views/assignments/MyAssignments.vue"), meta: onlyAuth() },
 
+  {
+    path: "/assignments/:id/solve",
+    name: "SolveAssignment",
+    component: () => import("@/views/assignments/SolveAssignment.vue"),
+    beforeEnter: [onlyNotFinished],
+    meta: onlyAuth(), // acceso autenticado
+  },
+
+  {
+    path: "/assignments/:id/result",
+    name: "AssignmentResult",
+    component: () => import("@/views/assignments/AssignmentResult.vue"),
+  },
+
+  // ⬇️ Debe ir al final
   { path: "/:pathMatch(.*)*", redirect: "/" },
+  { path: "/attempts/my", name: "MyAttemptsHistory", component: () => import("@/views/assignments/AttemptHistory.vue"), meta: onlyAuth() },
 ];
 
 const router = createRouter({
@@ -62,7 +74,9 @@ function waitForAuthInit(): Promise<void> {
 async function waitForProfileReady(): Promise<void> {
   const profile = useProfileStore();
   if (!profile.ready) {
-    try { profile.init(); } catch {}
+    try {
+      profile.init();
+    } catch {}
   }
   if (profile.ready) return;
   await new Promise<void>((resolve) => {
@@ -80,7 +94,6 @@ async function waitForProfileReady(): Promise<void> {
 function consumePostLoginRedirect(currentPath: string): string | null {
   const stored = localStorage.getItem(LS_KEY);
   if (!stored) return null;
-  // evita bucle
   if (stored !== currentPath) {
     localStorage.removeItem(LS_KEY);
     return stored;
@@ -89,15 +102,14 @@ function consumePostLoginRedirect(currentPath: string): string | null {
   return null;
 }
 
-// ==== Guard
+// ==== Global Guard
 router.beforeEach(async (to, _from, next) => {
-  const requiresAuth   = to.matched.some((r) => r.meta?.requiresAuth === true);
-  const requiresTeacher= to.matched.some((r) => (r.meta as any)?.requiresTeacher === true);
-  const rolesMeta      = to.matched.find((r) => (r.meta as any)?.roles)?.meta?.roles as string[] | undefined;
+  const requiresAuth = to.matched.some((r) => r.meta?.requiresAuth === true);
+  const requiresTeacher = to.matched.some((r) => (r.meta as any)?.requiresTeacher === true);
+  const rolesMeta = to.matched.find((r) => (r.meta as any)?.roles)?.meta?.roles as string[] | undefined;
 
   // Rutas públicas
   if (!requiresAuth && !requiresTeacher && !rolesMeta) {
-    // Si ya logueado y abre /login, respeta redirect (query o LS)
     if (to.name === "Login" && auth.currentUser) {
       const fromLS = consumePostLoginRedirect(to.fullPath);
       if (fromLS) return next(fromLS);
@@ -110,13 +122,13 @@ router.beforeEach(async (to, _from, next) => {
   // Espera Auth
   await waitForAuthInit();
 
-  // Si hay user y redirect pendiente, aplícalo desde cualquier ruta
+  // Si hay user y redirect pendiente, aplícalo
   if (auth.currentUser) {
     const fromLS = consumePostLoginRedirect(to.fullPath);
     if (fromLS) return next(fromLS);
   }
 
-  // Si requiere auth y no hay user → /login con redirect
+  // Requiere auth
   if ((requiresAuth || requiresTeacher || rolesMeta) && !auth.currentUser) {
     return next({ name: "Login", query: { redirect: to.fullPath } });
   }
@@ -143,6 +155,7 @@ router.beforeEach(async (to, _from, next) => {
 });
 
 export default router;
+
 
 
 

@@ -83,6 +83,7 @@ onMounted(async () => {
   }
 });
 
+
 async function submitAttempt() {
   if (selected.value == null) {
     alert("Elige una opción");
@@ -103,6 +104,10 @@ async function submitAttempt() {
       problemId,                    // id del problema
       answerIndex: selected.value,  // índice de la respuesta
       createdAt: serverTimestamp(),
+
+      // ✅ NUEVO: estado del intento al enviarse
+      status: "finished",           // "in_progress" si alguna vez guardas parcial; aquí es envío final
+      finishedAt: serverTimestamp() // útil para reportes/bloqueos
     });
 
     router.back();
