@@ -67,7 +67,7 @@ service cloud.firestore {
       }
 
       // Crear: alumno para sí mismo + ownerUid presente + shape válido
-      allow create: if isStudent()
+      allow create: if (isStudent() || isTeacher())
         && isSelfCreate()
         && (request.resource.data.ownerUid is string)
         && shapeIsValidOnCreate();

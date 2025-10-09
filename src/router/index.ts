@@ -50,6 +50,19 @@ const routes: RouteRecordRaw[] = [
     component: () => import("@/views/assignments/AssignmentResult.vue"),
   },
 
+  {
+    path: "/assignments/new",
+    name: "AssignmentNew",
+    component: () => import("@/views/assignments/AssignmentForm.vue"),
+    meta: onlyTeacher(),
+  },
+  {
+    path: "/assignments/:id/edit",
+    name: "AssignmentEdit",
+    component: () => import("@/views/assignments/AssignmentForm.vue"),
+    meta: onlyTeacher(),
+  },
+
   // ⬇️ Debe ir al final
   { path: "/:pathMatch(.*)*", redirect: "/" },
   { path: "/attempts/my", name: "MyAttemptsHistory", component: () => import("@/views/assignments/AttemptHistory.vue"), meta: onlyAuth() },

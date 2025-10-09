@@ -12,6 +12,7 @@ import {
   assignmentDoc,
   colAttempts,
   attemptDoc,
+  auth, // 👈 usamos siempre el UID de Auth para cumplir reglas
 } from "@/services/firebase";
 
 /* ---------------------------- tipos del dominio --------------------------- */
@@ -30,8 +31,8 @@ type Assignment = {
   problemIds?: string[];
   ownerUid: string;
   startsAt?: any;
-  endsAt?: any;          // opcional (no se usa para el timer relativo)
-  timeLimitSec?: number; // ✅ NUEVO: duración en segundos (e.g., 300, 600, 900, 1800)
+  endsAt?: any;
+  timeLimitSec?: number;
 };
 
 /* --------------------------------- utils --------------------------------- */
@@ -47,7 +48,9 @@ const assignmentId = route.params.id as string;
 
 const profileStore = useProfileStore();
 const { uid } = storeToRefs(profileStore);
-const email = computed(() => (profileStore as any).email ?? "");
+
+// email con fallback a Auth
+const email = computed(() => (profileStore as any).email ?? auth.currentUser?.email ?? "");
 
 const loading = ref(true);
 const saving = ref(false);
@@ -64,6 +67,9 @@ const locked = ref(false);
 const attemptId = ref<string | null>(null);
 const startedAtMs = ref<number | null>(null);
 const answers = ref<Record<string, number | null>>({});
+
+// UID actual (Auth primero, luego store)
+const meUid = computed(() => auth.currentUser?.uid || uid.value || "");
 
 /* --------------------------- temporizador (timeLimitSec) ------------------ */
 const hasTimer = ref(false);
@@ -87,7 +93,7 @@ const remainingClass = computed(() => {
 function startTimer() {
   if (!deadlineMs.value) return;
   hasTimer.value = true;
-  tick(); // primer cálculo inmediato
+  tick();
   ticker = setInterval(tick, 1000);
 }
 function tick() {
@@ -101,7 +107,7 @@ function tick() {
     ticker = null;
     if (!saving.value && !locked.value && attemptId.value) {
       locked.value = true;
-      finalizeAttempt(); // redirige a resultados
+      finalizeAttempt();
     }
   }
 }
@@ -110,7 +116,9 @@ onUnmounted(() => { if (ticker) clearInterval(ticker); });
 
 /* ------------------------------- persistencia ----------------------------- */
 const persistPartial = debounce(async () => {
-  if (!attemptId.value) return;
+  // ⛔ Evita updates cuando estamos finalizando o ya bloqueado
+  if (!attemptId.value || saving.value || locked.value) return;
+
   const packedPartial = Object.entries(answers.value)
     .filter(([, sel]) => sel !== null)
     .map(([pid, sel]) => {
@@ -118,6 +126,7 @@ const persistPartial = debounce(async () => {
       const correct = (sel as number) === (p?.correctIndex ?? -1);
       return { problemId: pid, selectedIndex: sel as number, correct };
     });
+
   try {
     await updateDoc(attemptDoc(attemptId.value), {
       answers: packedPartial,
@@ -131,6 +140,7 @@ const persistPartial = debounce(async () => {
 /* ------------------------------ carga inicial ---------------------------- */
 onMounted(async () => {
   try {
+    // 1) Cargar asignación
     const aSnap = await getDoc(assignmentDoc(assignmentId));
     if (!aSnap.exists()) {
       errorMsg.value = "Asignación no encontrada";
@@ -139,7 +149,7 @@ onMounted(async () => {
     }
     assignment.value = { id: aSnap.id, ...(aSnap.data() as any) };
 
-    // Cargar problemas
+    // 2) Cargar problemas
     const ids: string[] = assignment.value.problemIds ?? [];
     problems.value = [];
     for (const pid of ids) {
@@ -151,13 +161,13 @@ onMounted(async () => {
       }
     }
 
-    // Buscar intento abierto (status o finishedAt == null)
+    // 3) Buscar intento abierto de ESTE usuario
     let docSnapOpen: any | null = null;
     try {
       const qOpenByStatus = query(
         colAttempts,
         where("assignmentId", "==", assignmentId),
-        where("studentUid", "==", uid.value),
+        where("studentUid", "==", meUid.value), // 👈 UID seguro
         where("status", "==", "in_progress"),
         limit(1)
       );
@@ -166,6 +176,7 @@ onMounted(async () => {
     } catch {}
 
     if (docSnapOpen) {
+      // 3a) Reanudar intento
       attemptId.value = docSnapOpen.id;
       const data = docSnapOpen.data() as any;
 
@@ -178,17 +189,16 @@ onMounted(async () => {
       } else {
         i.value = 0; currentIndex.value = 0;
       }
-
-      // ✅ Usa el startedAt del intento (si existe) para que el timer sea consistente entre recargas
       startedAtMs.value = data.startedAt?.toMillis?.() ?? Date.now();
     } else {
-      // Crear intento nuevo (abierto)
-      const newAttempt = await addDoc(colAttempts, {
+      // 3b) Crear intento nuevo (abierto) — cumple reglas aunque seas teacher
+      const owner = assignment.value!.ownerUid || meUid.value; // fallback defensivo
+      const payload = {
         assignmentId,
         assignmentTitle: assignment.value?.title ?? "",
-        ownerUid: assignment.value!.ownerUid,
-        studentUid: uid.value,
-        userUid: uid.value,
+        ownerUid: String(owner),               // reglas piden string
+        studentUid: String(meUid.value),       // 👈 igual al auth.uid
+        userUid: String(meUid.value),          // 👈 igual al auth.uid
         studentEmail: email.value ?? "",
         answers: [],
         correctCount: 0,
@@ -199,15 +209,16 @@ onMounted(async () => {
         version: 1,
         status: "in_progress",
         currentIndex: 0,
-      });
+      };
+      // console.log("[attempt payload]", payload);
+      const newAttempt = await addDoc(colAttempts, payload);
       attemptId.value = newAttempt.id;
       i.value = 0;
       currentIndex.value = 0;
-      // A falta del serverTimestamp inmediato, tomamos ahora como referencia
       startedAtMs.value = Date.now();
     }
 
-    /* ⏱️ Arranque del temporizador SOLO si el maestro definió timeLimitSec */
+    // 4) ⏱️ Timer si el maestro definió timeLimitSec
     const limitSec = Number((assignment.value as any)?.timeLimitSec || 0);
     if (limitSec > 0) {
       deadlineMs.value = (startedAtMs.value ?? Date.now()) + limitSec * 1000;
@@ -235,7 +246,7 @@ watch(i, () => {
 /* ------------------------- enviar respuesta / avanzar --------------------- */
 async function submitAttempt() {
   if (locked.value) return;
-  if (!assignment.value || !current.value || selectedIndex.value == null || !uid.value) return;
+  if (!assignment.value || !current.value || selectedIndex.value == null || !meUid.value) return;
 
   submitted.value = true;
   locked.value = true;
@@ -370,5 +381,6 @@ async function finalizeAttempt() {
     </div>
   </div>
 </template>
+
 
 

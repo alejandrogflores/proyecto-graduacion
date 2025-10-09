@@ -35,3 +35,5 @@ firestore_export/
 *.tsbuildinfo
 
 
+
+firebase-export-*

@@ -7,7 +7,13 @@ import { storeToRefs } from "pinia";
 import StatusChip from "@/components/StatusChip.vue";
 import { useRouter } from "vue-router";
 
-type Assignment = { id: string; title?: string; problemIds?: string[]; ownerUid?: string; };
+type Assignment = { 
+    id: string; 
+    title?: string; 
+    problemIds?: string[]; 
+    ownerUid?: string; 
+    timeLimitSec?: number;};
+
 type Attempt = {
   id: string;
   assignmentId: string;
