@@ -1,169 +1,149 @@
+<!-- src/views/assignments/AssignmentForm.vue -->
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
-import { useRouter, useRoute } from "vue-router";
-import { addDoc, setDoc, getDoc, updateDoc, deleteField } from "firebase/firestore";
-import { assignmentDoc, colAssignments, auth } from "@/services/firebase";
-// import { useProfileStore } from "@/stores/profile"; // ← no se usa aquí
+import { ref, computed, onMounted } from "vue";
+import { useRouter } from "vue-router";
+import {
+  addDoc, serverTimestamp, getDocs, query, where, collection,
+} from "firebase/firestore";
+import { auth, db, colAssignments, colClasses, colProblems } from "@/services/firebase";
+import { useProfileStore } from "@/stores/profile";
 
-// ====== estado base del form ======
-const route = useRoute();
+type ProblemLite = { id: string; title?: string };
+type ClassLite = { id: string; name?: string; rosterUids?: string[] };
+
 const router = useRouter();
-const isEdit = computed(() => Boolean(route.params.id));
-const assignmentId = route.params.id as string | undefined;
+const profile = useProfileStore();
+if (!profile.ready) profile.init?.();
 
 const title = ref("");
-const problemIdsText = ref(""); // texto JSON o lista por comas
+const classId = ref<string | null>(null);
+const publishNow = ref(true);
+const timeLimitSec = ref<number | null>(null);
+const selectedProblems = ref<string[]>([]);
 
-// Selector de tiempo límite (en MINUTOS); null = Sin límite
-const timeLimitMinutes = ref<null | number>(null);
-const timeOptions = [
-  { label: "Sin límite", value: null },
-  { label: "5 minutos", value: 5 },
-  { label: "10 minutos", value: 10 },
-  { label: "15 minutos", value: 15 },
-  { label: "30 minutos", value: 30 },
-];
+const loading = ref(true);
+const classes = ref<ClassLite[]>([]);
+const problems = ref<ProblemLite[]>([]);
 
-const loading = ref(false);
-const saving  = ref(false);
-const errorMsg = ref("");
+const isValid = computed(() =>
+  title.value.trim().length > 0 && selectedProblems.value.length > 0
+);
 
-onMounted(async () => {
-  if (!isEdit.value) return;
-
+async function loadOptions() {
   loading.value = true;
   try {
-    const snap = await getDoc(assignmentDoc(assignmentId!));
-    if (snap.exists()) {
-      const data = snap.data() as any;
-      title.value = data.title ?? "";
-      problemIdsText.value = JSON.stringify(data.problemIds ?? []);
+    const clsQs = await getDocs(collection(db, "classes"));
+    classes.value = clsQs.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
 
-      if (typeof data.timeLimitSec === "number") {
-        timeLimitMinutes.value = Math.round(data.timeLimitSec / 60);
-      } else {
-        timeLimitMinutes.value = null; // Sin límite
-      }
-    }
-  } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e);
+    const probQs = await getDocs(colProblems);
+    problems.value = probQs.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
   } finally {
     loading.value = false;
   }
-});
-
-function parseProblemIds(text: string): string[] {
-  try {
-    return text ? JSON.parse(text) : [];
-  } catch {
-    // fallback: coma separada
-    return text
-      .split(",")
-      .map(s => s.trim().replace(/^["']|["']$/g, ""))
-      .filter(Boolean);
-  }
 }
 
-async function save() {
-  try {
-    saving.value = true;
+onMounted(loadOptions);
 
-    const parsedIds = parseProblemIds(problemIdsText.value);
-
-    // Construye el payload base (incluye problemIds)
-    const payload: Record<string, any> = {
-      title: title.value,
-      problemIds: parsedIds,
-      ownerUid: auth.currentUser?.uid,
-    };
-
-    // timeLimitSec solo si NO es "Sin límite"
-    if (timeLimitMinutes.value != null) {
-      payload.timeLimitSec = timeLimitMinutes.value * 60; // minutos → segundos
-    }
-
-    if (isEdit.value) {
-      // Guardar cambios (merge true)
-      await setDoc(assignmentDoc(assignmentId!), payload, { merge: true });
-
-      // Si el usuario eligió "Sin límite", elimina el campo si existía
-      if (timeLimitMinutes.value == null) {
-        await updateDoc(assignmentDoc(assignmentId!), { timeLimitSec: deleteField() });
-      }
-    } else {
-      // Crear: no incluyas timeLimitSec si es null (ya no está en payload)
-      await addDoc(colAssignments, payload);
-    }
-
-    router.push({ name: "MyAssignments" });
-  } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e);
-  } finally {
-    saving.value = false;
+async function onSave() {
+  if (!auth.currentUser) {
+    alert("Sesión expirada.");
+    return;
   }
+  if (!isValid.value) {
+    alert("Completa título y selecciona al menos un problema.");
+    return;
+  }
+
+  // Foto de roster (si hay clase y se publica)
+  let assigneeUids: string[] = [];
+  if (classId.value && publishNow.value) {
+    const found = classes.value.find((c) => c.id === classId.value);
+    assigneeUids = Array.isArray(found?.rosterUids) ? found!.rosterUids! : [];
+  }
+
+  const docData: any = {
+    title: title.value.trim(),
+    ownerUid: auth.currentUser.uid,
+    classId: classId.value ?? null,
+    problemIds: selectedProblems.value,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+
+    // 🚀 NUEVOS CAMPOS SIEMPRE PRESENTES
+    isPublished: publishNow.value === true,
+    assigneeUids, // si es borrador: [], si se publica: roster
+
+    // Opcional
+    timeLimitSec: timeLimitSec.value ?? null,
+  };
+
+  if (docData.isPublished) {
+    docData.publishedAt = serverTimestamp();
+  }
+
+  const ref = await addDoc(colAssignments, docData);
+  alert("Asignación guardada.");
+  router.push({ name: "AssignmentsByClass", params: { id: classId.value || "all" } });
 }
 </script>
 
 <template>
-  <div class="max-w-2xl mx-auto space-y-6">
-    <h1 class="text-2xl font-semibold">
-      {{ isEdit ? "Editar asignación" : "Nueva asignación" }}
-    </h1>
+  <section class="max-w-5xl mx-auto p-4">
+    <h1 class="text-2xl font-bold mb-4">Nueva asignación</h1>
 
-    <div class="space-y-4">
-      <!-- Título -->
-      <label class="block">
-        <span class="text-sm font-medium">Título</span>
-        <input
-          v-model="title"
-          class="mt-1 w-full border rounded px-3 py-2"
-          type="text"
-          placeholder="Ej. Asignación de práctica 1"
-        />
-      </label>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div>
+        <label class="block text-sm font-medium">Título</label>
+        <input v-model="title" class="mt-1 w-full border rounded p-2" placeholder="Quiz 1, Evaluación 2…" />
+      </div>
 
-      <!-- Problemas -->
-      <label class="block">
-        <span class="text-sm font-medium">Problemas (IDs en JSON o separados por coma)</span>
-        <textarea
-          v-model="problemIdsText"
-          class="mt-1 w-full border rounded px-3 py-2"
-          rows="3"
-          placeholder='["probId1","probId2"]  o  probId1, probId2'
-        ></textarea>
-      </label>
-
-      <!-- Selector de Límite de Tiempo -->
-      <label class="block">
-        <span class="text-sm font-medium">Tiempo límite</span>
-        <select
-          v-model="timeLimitMinutes"
-          class="mt-1 w-full border rounded px-3 py-2 bg-white"
-        >
-          <option
-            v-for="opt in timeOptions"
-            :key="String(opt.value)"
-            :value="opt.value"
-          >
-            {{ opt.label }}
+      <div>
+        <label class="block text-sm font-medium">Asignar a clase</label>
+        <select v-model="classId" class="mt-1 w-full border rounded p-2">
+          <option :value="null">No asignar (borrador)</option>
+          <option v-for="c in classes" :key="c.id" :value="c.id">
+            {{ c.name || c.id }}
           </option>
         </select>
         <p class="text-xs text-gray-500 mt-1">
-          Si eliges “Sin límite”, no se guardará el campo <code>timeLimitSec</code>.
+          Si publicas y eliges una clase, se copiará el roster en <code>assigneeUids</code>.
         </p>
-      </label>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium">Problemas</label>
+        <div class="mt-1 border rounded p-2 h-40 overflow-auto space-y-1">
+          <label v-for="p in problems" :key="p.id" class="flex items-center gap-2 text-sm">
+            <input type="checkbox" :value="p.id" v-model="selectedProblems" />
+            <span>{{ p.title || p.id }}</span>
+          </label>
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium">Tiempo límite</label>
+        <select v-model="timeLimitSec" class="mt-1 w-full border rounded p-2">
+          <option :value="null">Sin límite</option>
+          <option :value="300">5 minutos</option>
+          <option :value="600">10 minutos</option>
+          <option :value="900">15 minutos</option>
+        </select>
+
+        <label class="mt-4 flex items-center gap-2 text-sm">
+          <input type="checkbox" v-model="publishNow" />
+          <span>Publicar ahora</span>
+        </label>
+      </div>
     </div>
 
-    <div class="flex items-center gap-3">
-      <button
-        class="px-4 py-2 rounded bg-black text-white disabled:opacity-50"
-        :disabled="saving || loading"
-        @click="save"
-      >
-        {{ saving ? "Guardando..." : "Guardar" }}
+    <div class="mt-6">
+      <button :disabled="!isValid" class="px-4 py-2 rounded bg-black text-white disabled:opacity-50" @click="onSave">
+        Guardar
       </button>
-      <span v-if="errorMsg" class="text-red-600 text-sm">{{ errorMsg }}</span>
     </div>
-  </div>
+  </section>
 </template>
+
+
+
 

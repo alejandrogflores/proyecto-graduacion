@@ -2,7 +2,7 @@
 import { storeToRefs } from "pinia";
 import { useProfileStore } from "@/stores/profile";
 const profile = useProfileStore();
-const { profile: p } = storeToRefs(profile);
+const p = profile; // ✅ usa el store directo
 </script>
 
 <template>

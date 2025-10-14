@@ -62,20 +62,14 @@ async function seed() {
 
   // 1) Users en Auth Emulator + docs en /users
   const teacherUid = await ensureUser(
-    "teacher@demo.test",
-    "demo1234",
-    "teacher",
-    "Profesor Demo"
+    "teacher@demo.test", "demo1234", "teacher", "Profesor Demo"
   );
   const studentUid = await ensureUser(
-    "student@demo.test",
-    "demo1234",
-    "student",
-    "Alumno Demo"
+    "student@demo.test", "demo1234", "student", "Alumno Demo"
   );
   console.log("👩‍🏫  Users listos:", { teacherUid, studentUid });
 
-  // 2) Tags (para filtros)
+  // 2) Tags
   const tags = [
     { slug: "aritmetica", name: "Aritmética" },
     { slug: "algebra", name: "Álgebra" },
@@ -192,7 +186,7 @@ async function seed() {
 
     ["p14", { ...baseProblem, ...mc({
       title: "Promedio",
-      statement: "Las notas son 6, 7, 8 y 9. ¿Promedio (media aritmética)?",
+      statement: "Las notas son 6, 7, 8 y 9. ¿Promedio?",
       options: ["7.25", "7.5", "7.75", "8"],
       correctIndex: 1, // 7.5
     }), tags: ["aritmetica", "razonamiento"], visibility: "public" }],
@@ -212,22 +206,21 @@ async function seed() {
   await putDoc("classes", "c6A", {
     title: "6° A",
     ownerUid: teacherUid,
-    // Deja ambos nombres para no romper nada:
-    rosterUids: [studentUid],
-    studentUids: [studentUid],
+    rosterUids: [studentUid],   // usado por el form
+    studentUids: [studentUid],  // por compatibilidad con otros componentes
     createdAt: serverTS(),
   });
   console.log("🏫  Clase c6A lista");
 
-  // 5) Assignments: publicado + borrador
+  // 5) Assignments: publicado + borrador (alineados a reglas nuevas)
   await putDoc("assignments", "a_pub", {
     title: "pruebita1publicada",
     ownerUid: teacherUid,
     classId: "c6A",
     problemIds: ["p1"],
-    assigneeUids: [studentUid], // foto del roster
-    isPublished: true,
-    publishedAt: serverTS(),     // opcional, pero útil para ordenar
+    assigneeUids: [studentUid],    // foto del roster
+    isPublished: true,             // ✅ boolean
+    publishedAt: serverTS(),       // opcional
     timeLimitSec: 300,
     createdAt: serverTS(),
     updatedAt: serverTS(),
@@ -238,14 +231,14 @@ async function seed() {
     ownerUid: teacherUid,
     classId: "c6A",
     problemIds: ["p2"],
-    assigneeUids: [],            // borrador => array vacío
-    isPublished: false,
+    assigneeUids: [],              // ✅ array vacío en borrador
+    isPublished: false,            // ✅ boolean
     createdAt: serverTS(),
     updatedAt: serverTS(),
   });
   console.log("📝  Assignments listos (publicado + borrador)");
 
-  // 6) Attempt de ejemplo (para que /reports no esté vacío)
+  // 6) Attempt de ejemplo
   await putDoc("attempts", "t_example", {
     assignmentId: "a_pub",
     studentUid,
@@ -266,5 +259,3 @@ seed().catch((e) => {
   console.error(e);
   process.exit(1);
 });
-
-

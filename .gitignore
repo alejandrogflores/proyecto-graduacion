@@ -37,3 +37,16 @@ firestore_export/
 
 
 firebase-export-*
+
+node_modules/
+dist/
+.vite/
+*.log
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+firebase-export/
+.emudata/
+.env
+.env.*
+!.env.example

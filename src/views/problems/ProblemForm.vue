@@ -1,29 +1,29 @@
+<!-- src/views/problems/ProblemForm.vue -->
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from "vue";
+import { reactive, ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { addDoc, setDoc, getDoc, serverTimestamp } from "firebase/firestore";
 import { auth, colProblems, problemDoc } from "@/services/firebase";
 
-import { withProblemDefaults, normalizeTags, type Problem } from "@/models/problem";
+// Tipos locales (evitamos referencias externas para que compile seguro)
+type Difficulty = "easy" | "medium" | "hard";
+type Visibility = "public" | "private" | "archived";
+type ProblemType = "multiple-choice" | "true-false" | "numeric" | "open-ended";
 
-
-// ---- Router / modo edición ----
+// Router / modo edición
 const route = useRoute();
 const router = useRouter();
-const isEdit = computed(() => !!route.params.id);
+const isEdit = computed(() => Boolean(route.params.id));
 const problemId = computed(() => String(route.params.id ?? ""));
 
-// ---- Estado general ----
+// Estado
 const loading = ref(false);
 const error = ref<string | null>(null);
-
-// ---- Control de versión (solo edición) ----
 const loadedVersion = ref<number>(1);
 
-// ---- Modelo principal (mantengo tu "form" reactivo) ----
-type PType = ProblemModel["type"]; // si tu modelo lo tiene
+// Modelo del formulario
 const form = reactive<{
-  type: PType;
+  type: ProblemType;
   title: string;
   statement: string;
   options: string[];
@@ -40,34 +40,42 @@ const form = reactive<{
   tolerance: null,
 });
 
-// ---- Campos NUEVOS de Fase 1 ----
-const tagsCsv = ref<string>(""); // entrada como "a, b, c"
+// Campos “extra”
+const tagsCsv = ref<string>("");
 const selectedDifficulty = ref<Difficulty>("medium");
 const selectedVisibility = ref<Visibility>("public");
 
-// ---- Cargar en modo edición ----
+// Helpers
+function normalizeTagsCsv(txt: string): string[] {
+  return txt
+    .split(",")
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean)
+    .filter((v, i, a) => a.indexOf(v) === i);
+}
+
+// Cargar si es edición
 onMounted(async () => {
   if (!isEdit.value) return;
   loading.value = true;
   try {
     const snap = await getDoc(problemDoc(problemId.value));
-    if (!snap.exists()) throw new Error("No existe el problema");
-    const data = withProblemDefaults(snap.data());
+    if (!snap.exists()) throw new Error("No existe el problema.");
+    const d = snap.data() as any;
 
-    // core
-    form.type = (data as any).type ?? "multiple-choice";
-    form.title = data.title ?? "";
-    form.statement = data.statement ?? "";
-    form.options = Array.isArray(data.options) ? data.options : ["", "", "", ""];
-    form.correctIndex = Number.isFinite(data.correctIndex) ? data.correctIndex : 0;
-    form.correctAnswer = (data as any).correctAnswer ?? "";
-    form.tolerance = (data as any).tolerance ?? null;
+    form.type = (d.type as ProblemType) ?? "multiple-choice";
+    form.title = d.title ?? "";
+    form.statement = d.statement ?? "";
+    form.options = Array.isArray(d.options) ? d.options : ["", "", "", ""];
+    form.correctIndex =
+      Number.isInteger(d.correctIndex) && d.correctIndex >= 0 ? d.correctIndex : 0;
+    form.correctAnswer = d.correctAnswer ?? "";
+    form.tolerance = d.tolerance ?? null;
 
-    // nuevos
-    tagsCsv.value = (data.tags ?? []).join(", ");
-    selectedDifficulty.value = data.difficulty ?? "medium";
-    selectedVisibility.value = data.visibility ?? "public";
-    loadedVersion.value = data.version ?? 1;
+    tagsCsv.value = Array.isArray(d.tags) ? d.tags.join(", ") : "";
+    selectedDifficulty.value = (d.difficulty as Difficulty) ?? "medium";
+    selectedVisibility.value = (d.visibility as Visibility) ?? "public";
+    loadedVersion.value = Number(d.version ?? 1);
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -75,7 +83,7 @@ onMounted(async () => {
   }
 });
 
-// ---- Validación mínima ----
+// Validaciones
 function validate(): string | null {
   if (!form.title.trim()) return "Falta el título.";
   if (!form.statement.trim()) return "Falta el enunciado.";
@@ -95,10 +103,11 @@ function validate(): string | null {
   if (form.type === "numeric" && !form.correctAnswer.trim()) {
     return "Numérica requiere la respuesta correcta.";
   }
+
   return null;
 }
 
-// ---- Guardar (crear/editar) ----
+// Guardar
 async function onSubmit() {
   const v = validate();
   if (v) {
@@ -106,9 +115,7 @@ async function onSubmit() {
     return;
   }
 
-  // base común para Firestore
-  const base: Partial<ProblemModel> & Record<string, any> = {
-    // core
+  const payload: Record<string, any> = {
     type: form.type,
     title: form.title.trim(),
     statement: form.statement.trim(),
@@ -116,37 +123,37 @@ async function onSubmit() {
     correctIndex: form.correctIndex,
     correctAnswer: form.correctAnswer,
     tolerance: form.tolerance,
-
-    // Fase 1: nuevos
-    tags: normalizeTags(tagsCsv.value),
+    tags: normalizeTagsCsv(tagsCsv.value),
     difficulty: selectedDifficulty.value,
     visibility: selectedVisibility.value,
     version: isEdit.value ? (loadedVersion.value ?? 1) + 1 : 1,
-
-    // timestamps
     updatedAt: serverTimestamp(),
   };
 
   try {
+    loading.value = true;
+
     if (isEdit.value) {
-      // setDoc(..., {merge:true}) permite añadir/actualizar campos nuevos sin perder otros
-      await setDoc(problemDoc(problemId.value), base, { merge: true });
+      await setDoc(problemDoc(problemId.value), payload, { merge: true });
     } else {
+      const ownerUid = auth.currentUser?.uid;
+      if (!ownerUid) throw new Error("No hay sesión. Inicia sesión para continuar.");
       await addDoc(colProblems, {
-        ...base,
-        createdBy: auth.currentUser?.uid ?? null, // si tus reglas lo requieren
+        ...payload,
+        ownerUid,
         createdAt: serverTimestamp(),
       });
     }
 
-    // Ajusta el nombre de la ruta a tu lista real
     router.push({ name: "ProblemsList" });
   } catch (e: any) {
-    error.value = e.message ?? String(e);
+    error.value = e?.message ?? String(e);
+  } finally {
+    loading.value = false;
   }
 }
 
-// ---- utilidades UI ----
+// UI helpers
 function addOption() {
   if (form.type !== "multiple-choice") return;
   form.options.push("");
@@ -160,7 +167,9 @@ function removeOption(i: number) {
 
 <template>
   <div class="max-w-3xl mx-auto p-4 space-y-4">
-    <h1 class="text-2xl font-semibold">{{ isEdit ? "Editar" : "Nuevo" }} problema</h1>
+    <h1 class="text-2xl font-semibold">
+      {{ isEdit ? "Editar problema" : "Nuevo problema" }}
+    </h1>
 
     <div class="grid gap-3">
       <!-- Tipo -->
@@ -186,14 +195,18 @@ function removeOption(i: number) {
         <textarea v-model="form.statement" class="border rounded p-2 min-h-[120px]"></textarea>
       </label>
 
-      <!-- Campos dinámicos -->
-      <div v-if="form.type==='multiple-choice' || form.type==='true-false'" class="space-y-2">
+      <!-- Opciones / según tipo -->
+      <div
+        v-if="form.type==='multiple-choice' || form.type==='true-false'"
+        class="space-y-2"
+      >
         <div class="flex items-center justify-between">
           <span class="text-sm font-medium">Opciones</span>
           <button class="text-sm underline" v-if="form.type==='multiple-choice'" @click="addOption">
             + opción
           </button>
         </div>
+
         <div class="space-y-2">
           <div v-for="(opt, i) in form.options" :key="i" class="flex gap-2 items-center">
             <input
@@ -244,7 +257,7 @@ function removeOption(i: number) {
         </label>
       </div>
 
-      <!-- NUEVOS: Fase 1 -->
+      <!-- Extra -->
       <div class="mb-4">
         <label class="block text-sm font-medium mb-1">Tags (separados por comas)</label>
         <input
@@ -265,6 +278,7 @@ function removeOption(i: number) {
             <option value="hard">Difícil</option>
           </select>
         </label>
+
         <label class="grid gap-1">
           <span class="text-sm font-medium">Visibilidad</span>
           <select v-model="selectedVisibility" class="border rounded p-2">
@@ -281,7 +295,7 @@ function removeOption(i: number) {
         <button
           @click="onSubmit"
           :disabled="loading"
-          class="px-4 py-2 rounded bg-blue-600 text-white"
+          class="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-60"
         >
           {{ loading ? "Guardando..." : "Guardar" }}
         </button>
@@ -290,4 +304,5 @@ function removeOption(i: number) {
     </div>
   </div>
 </template>
+
 

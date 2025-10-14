@@ -48,7 +48,7 @@ export const useAuthStore = defineStore("auth", {
 
     async logout() {
       await signOut(auth);
-      useProfileStore().clear();
+      useProfileStore().reset();
     },
   },
 });

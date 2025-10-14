@@ -1,51 +1,32 @@
 <!-- src/views/reports/Reports.vue -->
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
-import { auth, colAttempts, db } from "@/services/firebase";
-import { getDoc, doc, getDocs, query, where } from "firebase/firestore";
+import { ref, onMounted } from "vue";
+import { getDocs, query, where } from "firebase/firestore";
+import { colAssignments, colAttempts } from "@/services/firebase";
+import { useProfileStore } from "@/stores/profile";
 
-type Role = "teacher" | "student" | "unknown";
+const profile = useProfileStore();
+if (!profile.ready) profile.init?.();
+
 const loading = ref(true);
-const role = ref<Role>("unknown");
-const total = ref(0);
-const corrects = ref(0);
-const errorMsg = ref("");
-
-const accuracy = computed(() => (total.value ? Math.round((corrects.value / total.value) * 100) : 0));
-
-async function getRole(uid: string): Promise<Role> {
-  try {
-    const snap = await getDoc(doc(db, "users", uid));
-    if (snap.exists()) {
-      const r = (snap.data() as any)?.role;
-      return r === "teacher" || r === "student" ? r : "unknown";
-    }
-  } catch (e) { console.error("[Reports] getRole error:", e); }
-  return "unknown";
-}
+const totalAssignments = ref(0);
+const publishedAssignments = ref(0);
+const myAttempts = ref(0);
 
 async function load() {
+  if (!profile.uid) return;
   loading.value = true;
-  errorMsg.value = "";
-
-  const u = auth.currentUser;
-  if (!u) { errorMsg.value = "No has iniciado sesión."; loading.value = false; return; }
-
-  role.value = await getRole(u.uid);
-
   try {
-    let snap = await getDocs(query(colAttempts, where("ownerUid", "==", u.uid)));
-    let docs = snap.docs;
-    if (docs.length === 0) {
-      snap = await getDocs(query(colAttempts, where("userUid", "==", u.uid)));
-      docs = snap.docs;
+    if (profile.isTeacherOrAdmin) {
+      const qAll = query(colAssignments, where("ownerUid", "==", profile.uid!));
+      totalAssignments.value = (await getDocs(qAll)).size;
+
+      const qPub = query(colAssignments, where("ownerUid", "==", profile.uid!), where("isPublished", "==", true));
+      publishedAssignments.value = (await getDocs(qPub)).size;
     }
-    total.value = docs.length;
-    corrects.value = docs.filter(d => (d.data() as any).isCorrect === true).length;
-    if (docs.length === 0) errorMsg.value = "No hay intentos para el criterio seleccionado.";
-  } catch (e: any) {
-    console.error("[Reports] query error:", e);
-    errorMsg.value = "No se pudo cargar el reporte. Revisa la consola por índices.";
+
+    const qMine = query(colAttempts, where("studentUid", "==", profile.uid!));
+    myAttempts.value = (await getDocs(qMine)).size;
   } finally {
     loading.value = false;
   }
@@ -55,30 +36,23 @@ onMounted(load);
 </script>
 
 <template>
-  <section class="text-center space-y-6">
-    <h1 class="text-3xl font-bold">Reportes</h1>
-
-    <div class="grid sm:grid-cols-3 gap-4 max-w-3xl mx-auto">
-      <div class="border rounded-xl p-4">
-        <div class="text-slate-500 mb-1">Intentos</div>
-        <div class="text-2xl font-semibold">{{ total }}</div>
+  <section class="max-w-6xl mx-auto p-4">
+    <h1 class="text-2xl font-bold mb-4">Reportes</h1>
+    <p v-if="loading">Cargando…</p>
+    <div v-else class="grid md:grid-cols-3 gap-4">
+      <div class="border rounded p-4">
+        <h3 class="font-semibold">Asignaciones creadas</h3>
+        <p class="text-3xl">{{ totalAssignments }}</p>
       </div>
-      <div class="border rounded-xl p-4">
-        <div class="text-slate-500 mb-1">Correctos</div>
-        <div class="text-2xl font-semibold">{{ corrects }}</div>
+      <div class="border rounded p-4">
+        <h3 class="font-semibold">Asignaciones publicadas</h3>
+        <p class="text-3xl">{{ publishedAssignments }}</p>
       </div>
-      <div class="border rounded-xl p-4">
-        <div class="text-slate-500 mb-1">Precisión</div>
-        <div class="text-2xl font-semibold">{{ accuracy }}%</div>
+      <div class="border rounded p-4">
+        <h3 class="font-semibold">Mis intentos</h3>
+        <p class="text-3xl">{{ myAttempts }}</p>
       </div>
     </div>
-
-    <p v-if="loading" class="text-slate-500">Cargando…</p>
-    <p v-else-if="errorMsg" class="text-slate-500">{{ errorMsg }}</p>
   </section>
 </template>
-
-
-
-
 

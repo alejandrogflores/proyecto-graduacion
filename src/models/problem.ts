@@ -1,5 +1,6 @@
 // src/models/problem.ts
 import type { Timestamp } from "firebase/firestore";
+import { db } from "@/services/firebase";
 
 export type Problem = {
   id?: string;

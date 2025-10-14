@@ -24,7 +24,7 @@ const profile = useProfileStore();
 
       <!-- AQUÍ: link docente hacia /attempts -->
       <RouterLink
-        v-if="profile.isTeacher"
+        v-if="profile.isTeacherOrAdmin"
         to="/attempts"
         class="block border rounded-xl p-4 hover:bg-slate-50"
       >

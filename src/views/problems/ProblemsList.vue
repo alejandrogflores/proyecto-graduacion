@@ -8,7 +8,6 @@ import {
   limit,
   getDocs,
   deleteDoc,
-  Timestamp,
 } from "firebase/firestore";
 import { colProblems, colTags, problemDoc } from "@/services/firebase";
 import { useProfileStore } from "@/stores/profile";
@@ -16,9 +15,10 @@ import { storeToRefs } from "pinia";
 
 // --- Perfil / permisos ---
 const profile = useProfileStore();
+if (!profile.ready) profile.init();
+
 const { ready, role, uid } = storeToRefs(profile);
-const canManage = computed(() => role.value === "teacher" || role.value === "admin");
-const revealAnswers = computed(() => ready.value && canManage.value);
+const isTeacherLike = computed(() => (role.value === "teacher" || role.value === "admin"));
 
 // --- Estado UI ---
 const router = useRouter();
@@ -34,7 +34,7 @@ type Problem = {
   correctIndex: number;
   createdAt?: any;
   updatedAt?: any;
-  createdBy?: string | null;
+  ownerUid?: string | null;
   tags?: string[];
   difficulty?: "easy" | "medium" | "hard";
   visibility?: "public" | "private" | "archived";
@@ -62,38 +62,48 @@ function fmtTs(ts: any): string {
 
 // --- Cargas ---
 async function loadTags() {
-  const snap = await getDocs(colTags);
-  tags.value = snap.docs.map((d) => ({ slug: d.data().slug, name: d.data().name }));
+  try {
+    const snap = await getDocs(colTags);
+    tags.value = snap.docs.map((d) => ({ slug: d.data().slug, name: d.data().name }));
+  } catch {
+    // si no tienes colección de tags, no pasa nada
+    tags.value = [];
+  }
 }
 
 async function loadProblems() {
+  if (!ready.value) return;
   loading.value = true;
   error.value = null;
   try {
-    const conds: any[] = [where("visibility", "==", "public")];
+    // 🔎 Maestro/Admin: ve SOLO lo suyo. Otros: ven públicos
+    const conds: any[] = isTeacherLike.value
+      ? [where("ownerUid", "==", uid.value)]
+      : [where("visibility", "==", "public")];
+
     if (selectedTag.value) conds.push(where("tags", "array-contains", selectedTag.value));
     if (selectedDifficulty.value) conds.push(where("difficulty", "==", selectedDifficulty.value));
 
-    // Nota: si no tienes createdAt, quita el orderBy o pon fallback
-    const qRef = query(colProblems, ...conds, orderBy("createdAt", "desc"), limit(pageSize));
-    const snap = await getDocs(qRef);
-    problems.value = snap.docs.map(
-      (d) =>
-        ({
-          id: d.id,
-          ...d.data(),
-          // defaults seguros
-          tags: d.data().tags ?? [],
-          difficulty: d.data().difficulty ?? "medium",
-          visibility: d.data().visibility ?? "public",
-          version: d.data().version ?? 1,
-          options: Array.isArray(d.data().options) ? d.data().options : [],
-          correctIndex:
-            Number.isInteger(d.data().correctIndex) && d.data().correctIndex >= 0
-              ? d.data().correctIndex
-              : 0,
-        } as Problem)
+    const qRef = query(
+      colProblems,
+      ...conds,
+      orderBy("createdAt", "desc"),
+      limit(pageSize)
     );
+    const snap = await getDocs(qRef);
+    problems.value = snap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as any),
+      tags: d.data().tags ?? [],
+      difficulty: d.data().difficulty ?? "medium",
+      visibility: d.data().visibility ?? (isTeacherLike.value ? "private" : "public"),
+      version: d.data().version ?? 1,
+      options: Array.isArray(d.data().options) ? d.data().options : [],
+      correctIndex:
+        Number.isInteger(d.data().correctIndex) && d.data().correctIndex >= 0
+          ? d.data().correctIndex
+          : 0,
+    })) as Problem[];
   } catch (e: any) {
     console.error(e);
     error.value = e?.message ?? "No se pudieron cargar los problemas.";
@@ -127,17 +137,20 @@ async function removeRow(id: string) {
 // --- Lifecycle ---
 onMounted(async () => {
   await loadTags();
-  await loadProblems();
+  if (ready.value) await loadProblems();
 });
+watch(ready, (r) => r && loadProblems());
 watch([selectedTag, selectedDifficulty], loadProblems);
 </script>
 
 <template>
   <section class="max-w-5xl mx-auto p-4">
     <header class="flex items-center justify-between mb-4">
-      <h1 class="text-2xl font-semibold">Banco de problemas</h1>
+      <h1 class="text-2xl font-semibold">
+        {{ isTeacherLike ? "Mi banco de problemas" : "Banco de problemas" }}
+      </h1>
       <button
-        v-if="ready && canManage"
+        v-if="ready && isTeacherLike"
         class="px-3 py-2 rounded bg-blue-600 text-white"
         @click="goCreate"
       >
@@ -170,7 +183,7 @@ watch([selectedTag, selectedDifficulty], loadProblems);
       <article v-for="p in problems" :key="p.id" class="border rounded-lg p-4 mb-4">
         <div class="flex items-start justify-between gap-3 flex-wrap">
           <div>
-            <h2 class="font-medium text-lg">{{ p.title }}</h2>
+            <h2 class="font-medium text-lg">{{ p.title || p.id }}</h2>
             <p class="text-sm text-gray-600 mb-2">{{ p.statement }}</p>
           </div>
 
@@ -190,7 +203,7 @@ watch([selectedTag, selectedDifficulty], loadProblems);
         </div>
 
         <!-- Opciones (solo teachers/admin) -->
-        <ul v-if="revealAnswers" class="text-sm text-gray-700 mb-3">
+        <ul v-if="isTeacherLike" class="text-sm text-gray-700 mb-3">
           <li v-for="(opt, i) in p.options" :key="i">
             {{ String.fromCharCode(65 + i) }}) {{ opt }}
             <span v-if="i === p.correctIndex">✔</span>
@@ -198,12 +211,16 @@ watch([selectedTag, selectedDifficulty], loadProblems);
         </ul>
 
         <div class="flex gap-2">
-          <router-link class="px-3 py-1 rounded border" :to="{ name: 'ProblemSolve', params: { id: p.id } }">
-            Resolver
+          <router-link
+            v-if="isTeacherLike"
+            class="px-3 py-1 rounded border"
+            :to="{ name: 'ProblemSolve', params: { id: p.id } }"
+          >
+            Previsualizar
           </router-link>
 
           <button
-            v-if="canManage || p.createdBy === uid"
+            v-if="isTeacherLike && (p.ownerUid === uid || role === 'admin')"
             class="px-3 py-1 rounded bg-amber-500 text-white"
             @click="goEdit(p.id)"
           >
@@ -219,6 +236,13 @@ watch([selectedTag, selectedDifficulty], loadProblems);
           </button>
         </div>
 
+        <p v-if="!isTeacherLike" class="text-xs text-gray-600 mt-2">
+          Para responder, ve a
+          <router-link class="underline" :to="{ name: 'MyAssignments' }">
+            Mis asignaciones
+          </router-link>.
+        </p>
+
         <p class="text-xs text-gray-500 mt-2">
           Creado: {{ fmtTs(p.createdAt) }} — Actualizado: {{ fmtTs(p.updatedAt) }}
         </p>
@@ -228,4 +252,3 @@ watch([selectedTag, selectedDifficulty], loadProblems);
     </div>
   </section>
 </template>
-
