@@ -31,7 +31,7 @@ const routes: RouteRecordRaw[] = [
   { path: "/problems/new", name: "ProblemNew", component: ProblemForm },
   { path: "/problems/:id/edit", name: "ProblemEdit", component: ProblemForm, props: true },
   { path: "/problems/:id", name: "ProblemSolve", component: ProblemSolve, props: true },
-
+  { path: "/assignments/:id/play", name: "AssignmentPlay", component: () => import("@/views/assignments/AssignmentPlay.vue"), meta: { requiresAuth: true } },
   // ✅ Asignaciones
   { path: "/assignments/new", name: "AssignmentNew", component: AssignmentForm },
   { path: "/classes/:id/assignments", name: "AssignmentsByClass", component: AssignmentsByClass, props: true },

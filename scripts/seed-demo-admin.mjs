@@ -73,6 +73,7 @@ async function seed() {
     "student",
     "Alumno Demo"
   );
+  
   console.log("👩‍🏫  Users listos:", { teacherUid, studentUid });
 
   // 2) Tags (para filtros)
