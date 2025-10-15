@@ -20,6 +20,7 @@ import SolveAssignment from "@/views/assignments/SolveAssignment.vue";
 // Reportes
 import Reports from "@/views/reports/Reports.vue";
 
+
 const routes: RouteRecordRaw[] = [
   { path: "/", redirect: "/dashboard" },
   { path: "/login", name: "Login", component: Login, meta: { hideHeader: true } },
@@ -37,9 +38,36 @@ const routes: RouteRecordRaw[] = [
   { path: "/classes/:id/assignments", name: "AssignmentsByClass", component: AssignmentsByClass, props: true },
   { path: "/assignments/my", name: "MyAssignments", component: MyAssignments },
   { path: "/assignments/:id/solve", name: "SolveAssignment", component: SolveAssignment, props: true },
+  {
+    path: "/attempts",
+    name: "TeacherAttempts",
+    component: () => import("@/views/reports/AttemptsList.vue"),
+    meta: { requiresAuth: true },
+  },
 
   // ✅ Reportes
   { path: "/reports", name: "Reports", component: Reports },
+  {
+    path: "/attempts/:id",
+    name: "AttemptDetail",
+    component: () => import("@/views/reports/AttemptDetail.vue"),
+    meta: { requiresAuth: true },
+    props: true,
+  },
+  {
+    path: "/assignments/:id/report",
+    name: "AssignmentReport",
+    component: () => import("@/views/reports/AssignmentReport.vue"),
+    meta: { requiresAuth: true },
+    props: true,
+  },
+  {
+    path: "/attempts/:id",
+    name: "AttemptDetail",
+    component: () => import("@/views/reports/AttemptDetail.vue"),
+    meta: { requiresAuth: true },
+    props: true,
+  },
 ];
 
 const router = createRouter({
