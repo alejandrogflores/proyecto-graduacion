@@ -140,8 +140,3 @@ async function loginWithGoogle() {
   }
 }
 </script>
-
-
-
-
-

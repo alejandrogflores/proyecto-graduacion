@@ -35,3 +35,28 @@ firestore_export/
 *.tsbuildinfo
 
 
+
+firebase-export-*
+
+node_modules/
+dist/
+.vite/
+*.log
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+firebase-export/
+.emudata/
+.env
+.env.*
+!.env.example
+
+printf "%s\n" \
+"node_modules/" \
+"dist/" \
+".env" \
+".env.*" \
+".firebase/" \
+".DS_Store" \
+"*.log" \
+> .gitignore

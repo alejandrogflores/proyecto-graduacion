@@ -2,93 +2,154 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    /* ===== Helpers ===== */
     function isSignedIn() { return request.auth != null; }
+    function userPath(u) { return /databases/$(database)/documents/users/$(u); }
     function userRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      return isSignedIn()
+        && exists(userPath(request.auth.uid))
+        && (get(userPath(request.auth.uid)).data.role is string)
+        ? get(userPath(request.auth.uid)).data.role
+        : null;
     }
-    function isTeacher() { return isSignedIn() && userRole() in ['teacher', 'admin']; }
-    function isStudent() { return isSignedIn() && userRole() == 'student'; }
-    function isOwner(uid) { return isSignedIn() && uid == request.auth.uid; }
+    function isTeacher() { return userRole() in ['teacher','admin']; }
+    function isStudent() { return isSignedIn() && (userRole() == 'student'); }
+    function isOwner(uid) { return isSignedIn() && (uid == request.auth.uid); }
+    function hasField(obj, field) { return field in obj; }
 
-    // users
+    // assignments helpers
+    function assgPath(id) { return /databases/$(database)/documents/assignments/$(id); }
+    function assgDoc(id)  { return get(assgPath(id)); }
+    function isAssigneeOnAssg(a) {
+      return ("assigneeUids" in a.data) && (request.auth.uid in a.data.assigneeUids);
+    }
+
+    // ✅ attempts helper (faltaba)
+    function attemptPath(id) { return /databases/$(database)/documents/attempts/$(id); }
+
+    /* ===== users ===== */
     match /users/{uid} {
       allow read: if isSignedIn();
-      allow write: if request.auth.uid == uid || isTeacher();
+      allow create: if isSignedIn() && isOwner(uid);
+      allow update: if isSignedIn() && (isOwner(uid) || isTeacher());
+      allow delete: if isTeacher();
     }
 
-    // classes
-    match /classes/{id} {
+    /* ===== tags ===== */
+    match /tags/{id} {
       allow read: if isSignedIn();
-      allow create: if isTeacher() && isOwner(request.resource.data.ownerUid);
-      allow update, delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      allow write: if isTeacher();
     }
 
-    // problems
+    /* ===== problems ===== */
     match /problems/{id} {
       allow read: if isSignedIn();
-      allow create: if isTeacher() && isOwner(request.resource.data.ownerUid);
-      allow update, delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      allow create: if isTeacher();
+      allow update, delete: if isTeacher()
+        && hasField(resource.data,'ownerUid')
+        && resource.data.ownerUid == request.auth.uid;
     }
 
-    // assignments
-    match /assignments/{id} {
+    /* ===== classes ===== */
+    match /classes/{id} {
       allow read: if isSignedIn();
-      allow create: if isTeacher() && isOwner(request.resource.data.ownerUid);
-      allow update, delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      allow create: if isTeacher()
+        && hasField(request.resource.data,'ownerUid')
+        && request.resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if isTeacher();
     }
 
-    // attempts (actualizado)
-    match /attempts/{id} {
-
-      // Crea el propio alumno (acepta userUid o studentUid)
-      function isSelfCreate() {
-        let d = request.resource.data;
-        return isSignedIn() && (
-          (('userUid' in d) && d.userUid == request.auth.uid) ||
-          (('studentUid' in d) && d.studentUid == request.auth.uid)
-        );
+    /* ===== assignments ===== */
+    match /assignments/{id} {
+      function isOwnerOfAssg() {
+        return ("ownerUid" in resource.data) && resource.data.ownerUid == request.auth.uid;
+      }
+      function isPublishedAssg() {
+        return ("isPublished" in resource.data) && resource.data.isPublished == true;
+      }
+      function isAssignee() {
+        return ("assigneeUids" in resource.data)
+          ? (request.auth.uid in resource.data.assigneeUids)
+          : false;
       }
 
-      // Dueño del intento existente
-      function isSelfExisting() {
-        return isSignedIn() && (
-          resource.data.userUid == request.auth.uid ||
-          (('studentUid' in resource.data) && resource.data.studentUid == request.auth.uid)
-        );
-      }
-
-      // Esquema válido al crear:
-      // - viejo: problemId
-      // - nuevo: assignmentId + answers[]
-      function shapeIsValidOnCreate() {
-        let d = request.resource.data;
-        return (('problemId' in d) && d.problemId is string)
-            || (('assignmentId' in d) && d.assignmentId is string && ('answers' in d));
-      }
-
-      // Crear: alumno para sí mismo + ownerUid presente + shape válido
-      allow create: if isStudent()
-        && isSelfCreate()
-        && (request.resource.data.ownerUid is string)
-        && shapeIsValidOnCreate();
-
-      // Actualizar: el alumno dueño mientras no esté finalizado
-      allow update: if isSelfExisting() && resource.data.finishedAt == null;
-
-      // Leer: alumno dueño o teacher owner
-      allow get, list: if isSignedIn() && (
-        isSelfExisting() || isOwner(resource.data.ownerUid)
+      allow read: if isSignedIn() && (
+        isTeacher() ? isOwnerOfAssg() : (isPublishedAssg() && isAssignee())
       );
 
-      // Borrar: solo el teacher dueño
-      allow delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      allow create: if isTeacher()
+        && ("ownerUid" in request.resource.data)
+        && request.resource.data.ownerUid == request.auth.uid;
+
+      allow update, delete: if isTeacher() && isOwnerOfAssg();
     }
 
-    // fallback
-    match /{document=**} {
+    /* ===== attempts ===== */
+    match /attempts/{id} {
+
+      // Lectura de doc individual:
+      // - si NO existe, permite que el alumno consulte sin romper
+      // - si existe, teacher o el propio alumno
+      allow read: if !exists(attemptPath(id))
+                  ? isStudent()
+                  : (
+                      isTeacher() ||
+                      (isStudent() && get(attemptPath(id)).data.studentUid == request.auth.uid)
+                    );
+
+      // Listados / agregaciones (getCountFromServer) -> solo docentes
+      allow list: if isTeacher();
+
+      // Crear (alumno asignado a assignment publicada)
+      allow create: if isStudent()
+        && hasField(request.resource.data,'studentUid')
+        && request.resource.data.studentUid == request.auth.uid
+        && hasField(request.resource.data,'assignmentId')
+        && exists(assgPath(request.resource.data.assignmentId))
+        && assgDoc(request.resource.data.assignmentId).data.isPublished == true
+        && isAssigneeOnAssg(assgDoc(request.resource.data.assignmentId))
+        && (!hasField(request.resource.data,'ownerUid')
+            || request.resource.data.ownerUid == assgDoc(request.resource.data.assignmentId).data.ownerUid)
+        && hasField(request.resource.data,'answers')
+        && (request.resource.data.answers is list)
+        && (hasField(request.resource.data,'finishedAt') ? request.resource.data.finishedAt == null : true);
+
+      // Actualizar (mientras no esté finalizado y sin cambiar ids)
+      allow update: if isStudent()
+        && exists(attemptPath(id))
+        && (get(attemptPath(id)).data.studentUid == request.auth.uid)
+        && (get(attemptPath(id)).data.finishedAt == null)
+        && request.resource.data.studentUid == get(attemptPath(id)).data.studentUid
+        && request.resource.data.assignmentId == get(attemptPath(id)).data.assignmentId;
+
+      // Borrar
+      allow delete: if isTeacher();
+    }
+
+    /* ===== submissions / achievements ===== */
+    match /submissions/{id} {
+      allow read: if isSignedIn() && (
+        isTeacher() ||
+        (hasField(resource.data,'studentUid') && resource.data.studentUid == request.auth.uid)
+      );
+      allow write: if isSignedIn() && (
+        isTeacher() ||
+        (hasField(request.resource.data,'studentUid') && request.resource.data.studentUid == request.auth.uid)
+      );
+    }
+
+    match /achievements/{id} {
       allow read: if isSignedIn();
-      allow write: if false;
+      allow write: if isTeacher();
+    }
+
+    /* ===== fallback ===== */
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
+
+
+
 

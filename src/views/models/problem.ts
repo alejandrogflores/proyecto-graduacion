@@ -1,4 +1,5 @@
 // src/models/problem.ts
+import { db } from "@/services/firebase";
 export type Difficulty = "easy" | "medium" | "hard";
 export type Visibility = "public" | "private" | "archived";
 

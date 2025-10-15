@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { useProfileStore } from "@/stores/profile";
+import { computed } from "vue";
+import { storeToRefs } from "pinia";
+
+
 const profile = useProfileStore();
+if (!profile.ready) profile.init?.();
+
+const { role } = storeToRefs(profile);
+const isTeacher = computed(() => role.value === "teacher" || role.value === "admin");
 </script>
 
 <template>
@@ -11,25 +19,24 @@ const profile = useProfileStore();
     <h1 class="text-4xl font-bold">Dashboard</h1>
     <p class="text-slate-600">Bienvenido. Desde aquí puedes crear problemas, resolver y ver tus reportes.</p>
 
-    <div class="grid sm:grid-cols-3 gap-4">
-      <RouterLink to="/problems" class="block border rounded-xl p-4 hover:bg-slate-50">
-        <h3 class="font-medium">Problemas</h3>
-        <p class="text-sm text-slate-600">Listar y crear</p>
-      </RouterLink>
-
-      <RouterLink to="/reports" class="block border rounded-xl p-4 hover:bg-slate-50">
-        <h3 class="font-medium">Reportes</h3>
-        <p class="text-sm text-slate-600">Intentos y aciertos</p>
-      </RouterLink>
-
-      <!-- AQUÍ: link docente hacia /attempts -->
+    <div class="grid md:grid-cols-2 gap-4">
+      <!-- Card de Problemas (la de la izquierda) -->
       <RouterLink
-        v-if="profile.isTeacher"
-        to="/attempts"
-        class="block border rounded-xl p-4 hover:bg-slate-50"
+        class="block border rounded p-4 hover:bg-gray-50 transition"
+        :to="{ name: 'ProblemsList' }"
       >
-        <h3 class="font-medium">Reporte Docente</h3>
-        <p class="text-sm text-slate-600">Ver alumnos y detalles</p>
+        <h3 class="font-semibold">Problemas</h3>
+        <p class="text-sm text-gray-600">Listar y crear</p>
+      </RouterLink>
+
+      <!-- Card de Reportes: ocúltala para alumnos -->
+      <RouterLink
+        v-if="isTeacher"
+        class="block border rounded p-4 hover:bg-gray-50 transition"
+        :to="{ name: 'Reports' }"
+      >
+        <h3 class="font-semibold">Reportes</h3>
+        <p class="text-sm text-gray-600">Intentos y aciertos</p>
       </RouterLink>
     </div>
     

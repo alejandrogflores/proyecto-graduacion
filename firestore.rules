@@ -2,93 +2,129 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    /* ===== Helpers ===== */
     function isSignedIn() { return request.auth != null; }
-    function userRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-    }
-    function isTeacher() { return isSignedIn() && userRole() in ['teacher', 'admin']; }
-    function isStudent() { return isSignedIn() && userRole() == 'student'; }
-    function isOwner(uid) { return isSignedIn() && uid == request.auth.uid; }
+    function userDoc(uid) { return get(/databases/$(database)/documents/users/$(uid)); }
+    function userRole() { return isSignedIn() ? userDoc(request.auth.uid).data.role : null; }
+    function isTeacher() { return isSignedIn() && (userRole() in ['teacher','admin']); }
+    function isOwner(uid) { return isSignedIn() && (uid == request.auth.uid); }
+    function hasField(obj, field) { return field in obj; }
 
-    // users
+    /* ===== users ===== */
     match /users/{uid} {
       allow read: if isSignedIn();
-      allow write: if request.auth.uid == uid || isTeacher();
+      allow create: if isSignedIn() && isOwner(uid);
+      allow update: if isSignedIn() && (isOwner(uid) || isTeacher());
+      allow delete: if isTeacher();
     }
 
-    // classes
+    /* ===== tags ===== */
+    match /tags/{id} {
+      allow read: if isSignedIn();
+      allow write: if isTeacher();
+    }
+
+    /* ===== problems ===== */
+    match /problems/{id} {
+      allow read: if isSignedIn() && (
+        isTeacher() ||
+        (hasField(resource.data, 'visibility') && resource.data.visibility == 'public') ||
+        (hasField(resource.data, 'ownerUid') && resource.data.ownerUid == request.auth.uid)
+      );
+      allow create: if isTeacher();
+      allow update, delete: if isTeacher() &&
+        hasField(resource.data, 'ownerUid') && resource.data.ownerUid == request.auth.uid;
+    }
+
+    /* ===== classes ===== */
     match /classes/{id} {
       allow read: if isSignedIn();
-      allow create: if isTeacher() && isOwner(request.resource.data.ownerUid);
-      allow update, delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      allow create: if isTeacher() &&
+        hasField(request.resource.data, 'ownerUid') &&
+        request.resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if isTeacher();
     }
 
-    // problems
-    match /problems/{id} {
-      allow read: if isSignedIn();
-      allow create: if isTeacher() && isOwner(request.resource.data.ownerUid);
-      allow update, delete: if isTeacher() && isOwner(resource.data.ownerUid);
-    }
-
-    // assignments
+    /* ===== assignments ===== */
     match /assignments/{id} {
-      allow read: if isSignedIn();
-      allow create: if isTeacher() && isOwner(request.resource.data.ownerUid);
-      allow update, delete: if isTeacher() && isOwner(resource.data.ownerUid);
+
+    function isOwnerOfAssg() {
+        return ("ownerUid" in resource.data) &&
+            resource.data.ownerUid == request.auth.uid;
     }
 
-    // attempts (actualizado)
+    function isPublishedAssg() {
+        return ("isPublished" in resource.data) &&
+            resource.data.isPublished == true;
+    }
+
+    // 👇 Blindaje 100%: si no existe/ no es array, NO evalúa `in`
+    function isAssignee() {
+        return ("assigneeUids" in resource.data)
+        ? (request.auth.uid in resource.data.assigneeUids)
+        : false;
+    }
+
+    // Solo evalúa la rama de tu rol
+    allow read: if isSignedIn() && (
+        isTeacher()
+        ? isOwnerOfAssg()
+        : (isPublishedAssg() && isAssignee())
+    );
+
+    allow create: if isTeacher() &&
+                    ("ownerUid" in request.resource.data) &&
+                    request.resource.data.ownerUid == request.auth.uid;
+
+    allow update, delete: if isTeacher() && isOwnerOfAssg();
+    }
+
+    /* ===== attempts ===== */
     match /attempts/{id} {
-
-      // Crea el propio alumno (acepta userUid o studentUid)
-      function isSelfCreate() {
-        let d = request.resource.data;
-        return isSignedIn() && (
-          (('userUid' in d) && d.userUid == request.auth.uid) ||
-          (('studentUid' in d) && d.studentUid == request.auth.uid)
-        );
-      }
-
-      // Dueño del intento existente
-      function isSelfExisting() {
-        return isSignedIn() && (
-          resource.data.userUid == request.auth.uid ||
-          (('studentUid' in resource.data) && resource.data.studentUid == request.auth.uid)
-        );
-      }
-
-      // Esquema válido al crear:
-      // - viejo: problemId
-      // - nuevo: assignmentId + answers[]
-      function shapeIsValidOnCreate() {
-        let d = request.resource.data;
-        return (('problemId' in d) && d.problemId is string)
-            || (('assignmentId' in d) && d.assignmentId is string && ('answers' in d));
-      }
-
-      // Crear: alumno para sí mismo + ownerUid presente + shape válido
-      allow create: if isStudent()
-        && isSelfCreate()
-        && (request.resource.data.ownerUid is string)
-        && shapeIsValidOnCreate();
-
-      // Actualizar: el alumno dueño mientras no esté finalizado
-      allow update: if isSelfExisting() && resource.data.finishedAt == null;
-
-      // Leer: alumno dueño o teacher owner
-      allow get, list: if isSignedIn() && (
-        isSelfExisting() || isOwner(resource.data.ownerUid)
+      allow read: if isSignedIn() && (
+        isTeacher() ||
+        (hasField(resource.data, 'studentUid') &&
+         resource.data.studentUid == request.auth.uid)
       );
 
-      // Borrar: solo el teacher dueño
-      allow delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      allow create: if isSignedIn() &&
+        hasField(request.resource.data, 'studentUid') &&
+        request.resource.data.studentUid == request.auth.uid;
+
+      allow update: if isSignedIn() && (
+        isTeacher() ||
+        (hasField(resource.data, 'studentUid') &&
+         request.resource.data.studentUid == request.auth.uid)
+      );
+
+      allow delete: if isTeacher();
     }
 
-    // fallback
-    match /{document=**} {
+    /* ===== submissions / achievements ===== */
+    match /submissions/{id} {
+      allow read: if isSignedIn() && (
+        isTeacher() ||
+        (hasField(resource.data, 'studentUid') &&
+         resource.data.studentUid == request.auth.uid)
+      );
+      allow write: if isSignedIn() && (
+        isTeacher() ||
+        (hasField(request.resource.data, 'studentUid') &&
+         request.resource.data.studentUid == request.auth.uid)
+      );
+    }
+
+    match /achievements/{id} {
       allow read: if isSignedIn();
-      allow write: if false;
+      allow write: if isTeacher();
+    }
+
+    /* ===== fallback ===== */
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
+
+
 

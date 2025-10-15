@@ -14,9 +14,10 @@ import {
   setDoc,
   serverTimestamp,
   connectFirestoreEmulator,
-  // ✅ Asegúrate de tener estos (los usarás en queries de attempts)
   query, where, limit, getDocs,
 } from "firebase/firestore";
+
+
 
 // .env (o hardcode en emulador)
 const firebaseConfig = {

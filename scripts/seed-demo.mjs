@@ -1,101 +1,58 @@
 // scripts/seed-demo.mjs
-import { initializeApp } from "firebase/app";
-import {
-  getFirestore, connectFirestoreEmulator,
-  doc, setDoc, serverTimestamp
-} from "firebase/firestore";
+import admin from "firebase-admin";
 
-// ====== CONFIG EMULADORES ======
-const HOST = "127.0.0.1";
-const AUTH_URL = `http://${HOST}:9099/identitytoolkit.googleapis.com/v1`;
+// Con emuladores NO uses credenciales; basta el projectId.
+// Los emuladores se detectan vía variables de entorno.
+admin.initializeApp({ projectId: "proyecto-de-graduacion-f1265" });
 
-// Util: crear usuario en Auth Emulator (o devolver su UID si ya existe)
-async function ensureUser(email, password, displayName) {
-  // 1) intenta crear
-  let res = await fetch(`${AUTH_URL}/accounts:signUp?key=fake`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, returnSecureToken: true }),
-  });
-  let json = await res.json();
+const auth = admin.auth();
+const db = admin.firestore();
 
-  // si ya existe, haz signIn y toma el UID
-  if (!res.ok) {
-    res = await fetch(`${AUTH_URL}/accounts:signInWithPassword?key=fake`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, returnSecureToken: true }),
-    });
-    json = await res.json();
-    if (!res.ok) throw new Error(`Auth error for ${email}: ${JSON.stringify(json)}`);
+async function ensureUser(email, displayName, role) {
+  let user;
+  try {
+    user = await auth.getUserByEmail(email);
+  } catch {
+    user = await auth.createUser({ email, password: "demo1234", displayName });
   }
-  return json.localId; // UID
+  await db.doc(`users/${user.uid}`).set({ role, email, displayName }, { merge: true });
+  return user.uid;
 }
 
 async function main() {
-  // Firestore (solo emulador)
-  const app = initializeApp({ projectId: "demo-seed" });
-  const db = getFirestore(app);
-  connectFirestoreEmulator(db, HOST, 8085);
+  // Usuarios base
+  const teacherUid = await ensureUser("teacher@demo.test", "Demo Teacher", "teacher");
+  const s1 = await ensureUser("student1@demo.test", "Student One", "student");
+  const s2 = await ensureUser("student2@demo.test", "Student Two", "student");
 
-  // ====== 1) Usuarios (Auth + /users) ======
-  const studentUid = await ensureUser("student@demo.test", "123456", "Alumno Demo");
-  const teacherUid = await ensureUser("teacher@demo.test", "123456", "Profesor Demo");
-
-  await setDoc(doc(db, "users", studentUid), {
-    email: "student@demo.test",
-    role: "student",
-    displayName: "Alumno Demo",
-    createdAt: serverTimestamp(),
-    lastSeen: serverTimestamp(),
+  // Clase
+  await db.doc("classes/c6A").set({
+    title: "6° A",
+    ownerUid: teacherUid,
+    studentUids: [s1, s2],
   }, { merge: true });
 
-  await setDoc(doc(db, "users", teacherUid), {
-    email: "teacher@demo.test",
-    role: "teacher",
-    displayName: "Profesor Demo",
-    createdAt: serverTimestamp(),
-    lastSeen: serverTimestamp(),
+  // Problemas
+  await db.doc("problems/p1").set({
+    title: "Suma simple",
+    statement: "¿Cuánto es 2 + 3?",
+    options: ["4","5","6","7"],
+    correctIndex: 1,
+    ownerUid: teacherUid,
   }, { merge: true });
 
-  // ====== 2) Problems ======
-  await setDoc(doc(db, "problems", "p1"), {
-    title: "Multiplicación",
-    statement: "¿Cuánto es 3 × 4?",
-    options: ["7", "9", "10", "12"],
-    correctIndex: 3,
+  await db.doc("problems/p2").set({
+    title: "Descuento",
+    statement: "Un artículo cuesta $100 y tiene 10% de descuento. ¿Cuánto pagas?",
+    options: ["$90","$95","$100","$110"],
+    correctIndex: 0,
     ownerUid: teacherUid,
-    createdAt: serverTimestamp(),
-  });
+  }, { merge: true });
 
-  await setDoc(doc(db, "problems", "p2"), {
-    title: "Suma",
-    statement: "¿Cuánto es 5 + 6?",
-    options: ["9", "10", "11", "12"],
-    correctIndex: 2,
-    ownerUid: teacherUid,
-    createdAt: serverTimestamp(),
-  });
-
-  // ====== 3) Assignment (cumple tu query de MyAssignments.vue) ======
-  await setDoc(doc(db, "assignments", "a1"), {
-    title: "Quiz 1",
-    classId: "c1",
-    ownerUid: teacherUid,
-    published: true,                    // <- tu query lo usa
-    assigneeUids: [studentUid],         // <- tu query lo usa
-    startsAt: serverTimestamp(),        // <- tu query lo ordena
-    endsAt: serverTimestamp(),
-    problemIds: ["p1", "p2"],
-    createdAt: serverTimestamp(),
-  });
-
-  console.log("✅ Seed listo: users (student/teacher), problems p1/p2 y assignment a1");
-  console.log(`   Student UID: ${studentUid}`);
-  console.log(`   Teacher UID: ${teacherUid}`);
+  console.log("✅ Seed listo: users, classes, problems");
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch((e) => {
+  console.error(e);
   process.exit(1);
 });

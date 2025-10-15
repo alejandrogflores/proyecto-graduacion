@@ -1,11 +1,15 @@
 {
+  "extends": "./tsconfig.app.json",
   "compilerOptions": {
+    "target": "ES2021",
+    "lib": ["ES2021", "DOM"],
     "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    }
-  }
+    "paths": { "@/*": ["src/*"] }
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"]
 }
+
+
 
 
 

@@ -14,7 +14,7 @@ export async function loadProfile() {
       // ejemplo: leer y actualizar algo
       const data = await getUser(u.uid);
       console.log("Perfil:", data);
-      await upsertUser(u.uid, { lastSeen: new Date() });
+      await upsertUser(u.uid, { lastSeen: new Date() } as any);
 
       off();
       resolve();
