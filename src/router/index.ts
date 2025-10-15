@@ -46,12 +46,12 @@ const routes: RouteRecordRaw[] = [
   },
 
   // ✅ Reportes
-  { path: "/reports", name: "Reports", component: Reports },
+  { path: "/reports", name: "Reports", component: Reports, meta: { requiresAuth: true, teacherOnly: true } },
   {
     path: "/attempts/:id",
     name: "AttemptDetail",
     component: () => import("@/views/reports/AttemptDetail.vue"),
-    meta: { requiresAuth: true },
+    meta: { requiresAuth: true, teacherOnly: true },
     props: true,
   },
   {
@@ -79,8 +79,14 @@ router.beforeEach(async (to) => {
   if (to.name === "Login") return true;
   const profile = useProfileStore();
   if (!profile.ready) profile.init?.();
-  if (!profile.ready) await new Promise((r) => setTimeout(r, 0));
+  if (!profile.ready) await new Promise(r => setTimeout(r, 0));
   if (!profile.uid) return { name: "Login" };
+
+  // 👇 bloquea rutas solo-docentes
+  const role = profile.role;
+  if (to.meta?.teacherOnly && role !== "teacher" && role !== "admin") {
+    return { name: "Dashboard" }; // o donde prefieras
+  }
   return true;
 });
 

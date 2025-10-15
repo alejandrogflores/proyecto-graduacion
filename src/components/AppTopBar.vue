@@ -38,7 +38,7 @@ async function logout() {
       <!-- Navegación base -->
       <RouterLink to="/dashboard" class="nav-link">Dashboard</RouterLink>
       <RouterLink to="/problems"  class="nav-link">Problemas</RouterLink>
-      <RouterLink to="/reports"   class="nav-link">Reportes</RouterLink>
+      <RouterLink v-if="role === 'teacher' || role === 'admin'" to="/reports"   class="nav-link">Reportes</RouterLink>
 
       <!-- Rama por rol -->
       <RouterLink

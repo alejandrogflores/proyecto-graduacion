@@ -1,115 +1,155 @@
-<template>
-  <div class="p-4 max-w-6xl mx-auto">
-    <h1 class="text-2xl font-bold mb-4">Reporte por asignación</h1>
+<script setup lang="ts">
+import { onMounted, ref, watchEffect } from "vue";
+import { useRoute, RouterLink } from "vue-router";
+import { getDocs, query, where, orderBy, doc, getDoc } from "firebase/firestore";
+import { colAttempts, assignmentDoc, classDoc } from "@/services/firebase";
+import { useProfileStore } from "@/stores/profile";
+import { storeToRefs } from "pinia";
 
-    <div class="text-sm text-gray-600 mb-4">
-      Asignación: <span class="font-mono">{{ assignmentId }}</span>
+type Row = {
+  id: string;
+  studentEmail?: string;
+  score?: number;
+  correctCount?: number;
+  total?: number;
+  finishedAt?: any;
+};
+
+const route = useRoute();
+const assignmentId = route.params.id as string;
+
+const profile = useProfileStore();
+const { uid } = storeToRefs(profile);
+
+const loading = ref(false);
+const error = ref("");
+const rows = ref<Row[]>([]);
+const title = ref<string>(assignmentId);
+const assigneeCount = ref<number | null>(null);
+
+function fmtTs(ts: any): string {
+  try {
+    if (!ts) return "—";
+    if (typeof ts.toDate === "function") return ts.toDate().toLocaleString();
+    if (typeof ts.seconds === "number") return new Date(ts.seconds * 1000).toLocaleString();
+    return new Date(ts).toLocaleString();
+  } catch { return "—"; }
+}
+
+function avg(nums: number[]) { return nums.length ? Math.round(nums.reduce((a,b)=>a+b,0)/nums.length) : 0; }
+function median(nums: number[]) {
+  if (!nums.length) return 0;
+  const a = [...nums].sort((x,y)=>x-y);
+  const m = Math.floor(a.length/2);
+  return a.length % 2 ? a[m] : Math.round((a[m-1]+a[m])/2);
+}
+
+async function load() {
+  if (!uid.value) return;
+  loading.value = true; error.value = "";
+  rows.value = [];
+  try {
+    // metadata de la asignación
+    const as = await getDoc(assignmentDoc(assignmentId));
+    if (as.exists()) {
+      const d = as.data() as any;
+      title.value = d.title || assignmentId;
+      // contar asignados desde la class (si está populado)
+      assigneeCount.value = Array.isArray(d.assigneeUids) ? d.assigneeUids.length : null;
+    }
+    // intentos finalizados de esa asignación (orden cronológico)
+    let qy = query(colAttempts,
+      where("ownerUid", "==", uid.value),
+      where("assignmentId", "==", assignmentId),
+      orderBy("finishedAt", "desc")
+    );
+    let qs;
+    try { qs = await getDocs(qy); }
+    catch (e:any) {
+      if (String(e?.message||"").includes("index")) {
+        qy = query(colAttempts,
+          where("ownerUid", "==", uid.value),
+          where("assignmentId", "==", assignmentId));
+        qs = await getDocs(qy);
+      } else { throw e; }
+    }
+
+    rows.value = qs.docs.map(d => {
+      const x = d.data() as any;
+      return {
+        id: d.id,
+        studentEmail: x.studentEmail,
+        score: x.score,
+        correctCount: x.correctCount,
+        total: x.total,
+        finishedAt: x.finishedAt,
+      };
+    });
+  } catch (e:any) {
+    console.error("[AssignmentReport]", e);
+    error.value = e?.message ?? "No se pudo cargar el reporte.";
+  } finally {
+    loading.value = false;
+  }
+}
+
+const doneCount = () => rows.value.length;
+const avgScore = () => avg(rows.value.filter(r => typeof r.score === "number").map(r => r.score as number));
+const medianScore = () => median(rows.value.filter(r => typeof r.score === "number").map(r => r.score as number));
+
+onMounted(() => {
+  if (!profile.ready) profile.init?.();
+  let started = false;
+  watchEffect(() => {
+    if (!started && profile.ready && uid.value) { started = true; load(); }
+  });
+});
+</script>
+
+<template>
+  <section class="max-w-7xl mx-auto p-4">
+    <div class="flex items-center justify-between mb-3">
+      <h1 class="text-2xl font-bold">Reporte: {{ title }}</h1>
+      <RouterLink class="px-3 py-1.5 border rounded" to="/attempts">Volver</RouterLink>
     </div>
 
-    <div v-if="loading">Cargando…</div>
+    <p v-if="loading">Cargando…</p>
+    <p v-else-if="error" class="text-red-600">{{ error }}</p>
+
     <div v-else>
-      <div class="grid gap-4 md:grid-cols-3 mb-6">
-        <div class="bg-white rounded-xl p-4 shadow">
-          <div class="text-sm text-gray-500">Intentos entregados</div>
-          <div class="text-3xl font-bold">{{ attempts.length }}</div>
-        </div>
-        <div class="bg-white rounded-xl p-4 shadow">
-          <div class="text-sm text-gray-500">Respuestas totales</div>
-          <div class="text-3xl font-bold">{{ totalAnswers }}</div>
-        </div>
-        <div class="bg-white rounded-xl p-4 shadow">
-          <div class="text-sm text-gray-500">Precisión global</div>
-          <div class="text-3xl font-bold">
-            {{ totalAnswers ? ((totalCorrect / totalAnswers) * 100).toFixed(1) : '0.0' }}%
-          </div>
-        </div>
+      <div class="grid md:grid-cols-4 gap-4 mb-4">
+        <div class="border rounded p-3"><div class="text-xs text-gray-500">Asignados</div><div class="text-2xl">{{ assigneeCount ?? "—" }}</div></div>
+        <div class="border rounded p-3"><div class="text-xs text-gray-500">Entregados</div><div class="text-2xl">{{ doneCount() }}</div></div>
+        <div class="border rounded p-3"><div class="text-xs text-gray-500">Promedio</div><div class="text-2xl">{{ avgScore() }}%</div></div>
+        <div class="border rounded p-3"><div class="text-xs text-gray-500">Mediana</div><div class="text-2xl">{{ medianScore() }}%</div></div>
       </div>
 
-      <div class="bg-white rounded-xl p-4 shadow overflow-auto">
+      <div class="overflow-auto">
         <table class="min-w-full text-sm">
           <thead>
-            <tr class="text-left border-b">
-              <th class="p-2">Estudiante</th>
-              <th class="p-2">Entregado</th>
-              <th class="p-2"># Resp.</th>
-              <th class="p-2"># Correctas</th>
-              <th class="p-2">% Acierto</th>
+            <tr class="border-b text-left">
+              <th class="py-2 pr-4">Alumno</th>
+              <th class="py-2 pr-4">Puntaje</th>
+              <th class="py-2 pr-4">Aciertos</th>
+              <th class="py-2 pr-4">Finalizado</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="a in attempts" :key="a.id" class="border-b">
-              <td class="p-2">
-                {{ a.studentEmail || a.studentUid }}
+            <tr v-for="r in rows" :key="r.id" class="border-b">
+              <td class="py-1 pr-4">
+                <RouterLink :to="{ name: 'AttemptDetail', params: { id: r.id } }"
+                            class="underline decoration-dotted">
+                  {{ r.studentEmail || "—" }}
+                </RouterLink>
               </td>
-              <td class="p-2">{{ fmt(a.finishedAt) }}</td>
-              <td class="p-2">{{ (a.answers?.length ?? 0) }}</td>
-              <td class="p-2">{{ (a.answers?.filter(x => x.correct).length ?? 0) }}</td>
-              <td class="p-2">
-                {{
-                  (a.answers?.length ?? 0)
-                    ? (((a.answers?.filter(x => x.correct).length ?? 0) / (a.answers?.length ?? 1)) * 100).toFixed(1)
-                    : '0.0'
-                }}%
-              </td>
+              <td class="py-1 pr-4">{{ r.score != null ? r.score + "%" : "—" }}</td>
+              <td class="py-1 pr-4">{{ r.correctCount ?? "—" }}/{{ r.total ?? "—" }}</td>
+              <td class="py-1 pr-4">{{ fmtTs(r.finishedAt) }}</td>
             </tr>
           </tbody>
         </table>
       </div>
-
     </div>
-  </div>
+  </section>
 </template>
 
-<script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
-import { useRoute } from "vue-router";
-import { getDocs, query, where } from "firebase/firestore";
-import { colAttempts, type Attempt } from "@/services/firebase";
-
-// ruta
-const route = useRoute();
-const assignmentId = route.params.id as string;
-
-// estado
-const loading = ref(true);
-const attempts = ref<Attempt[]>([]);
-
-onMounted(async () => {
-  try {
-    if (!assignmentId) {
-      attempts.value = [];
-      return;
-    }
-    const q = query(colAttempts, where("assignmentId", "==", assignmentId));
-    const snap = await getDocs(q);
-    const items = snap.docs
-      .map(d => ({ id: d.id, ...(d.data() as Attempt) }))
-      // considera solo entregados
-      .filter(a => (a as Attempt)?.finishedAt);
-    attempts.value = items;
-  } finally {
-    loading.value = false;
-  }
-});
-
-const totalAnswers = computed(() =>
-  attempts.value.reduce((acc, a) => acc + (a.answers?.length ?? 0), 0)
-);
-
-const totalCorrect = computed(() =>
-  attempts.value.reduce((acc, a) => acc + (a.answers?.filter(x => x.correct).length ?? 0), 0)
-);
-
-// formato
-function fmt(x: any) {
-  if (!x) return "—";
-  // Timestamp de Firestore
-  // @ts-ignore
-  if (typeof x?.toDate === "function") return x.toDate().toLocaleString();
-  if (typeof x === "number") return new Date(x).toLocaleString();
-  return String(x);
-}
-</script>
-
-<style scoped>
-</style>
