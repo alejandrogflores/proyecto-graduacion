@@ -19,6 +19,8 @@ if (!profile.ready) profile.init();
 
 const { ready, role, uid } = storeToRefs(profile);
 const isTeacherLike = computed(() => (role.value === "teacher" || role.value === "admin"));
+// Guard/alias explícito para bloques de solución
+const isTeacher = computed(() => role.value === "teacher" || role.value === "admin");
 
 // --- Estado UI ---
 const router = useRouter();
@@ -28,10 +30,18 @@ const error = ref<string | null>(null);
 // --- Datos ---
 type Problem = {
   id: string;
-  title: string;
-  statement: string;
-  options: string[];
-  correctIndex: number;
+  title?: string;
+  statement?: string;
+
+  // Campos legacy MC
+  options?: any[];          // puede ser string[] (legacy) o {text, correct}[]
+  correctIndex?: number;
+
+  // Campos nuevos por tipo
+  type?: "multiple_choice" | "true_false" | "numeric" | "short_text" | "open_rubric" | string;
+  answer?: { correct?: boolean } | any;
+  spec?: any;
+
   createdAt?: any;
   updatedAt?: any;
   ownerUid?: string | null;
@@ -58,6 +68,58 @@ function fmtTs(ts: any): string {
   } catch {
     return "—";
   }
+}
+
+// ===== Helpers de formato para las claves =====
+function formatNumericSpec(spec: any): string {
+  if (!spec) return "—";
+  const p = (n: any) => (Number.isFinite(n) ? String(n) : "—");
+
+  switch (spec.mode) {
+    case "value":
+    case "tolerance": {
+      const value = p(spec.value);
+      const tol   = Number.isFinite(spec.tolerance) ? ` ± ${spec.tolerance}` : "";
+      const prec  = Number.isFinite(spec.precision) ? ` (prec: ${spec.precision})` : "";
+      return `${value}${tol}${prec}`.trim();
+    }
+    case "range":
+      return `${p(spec.min)} … ${p(spec.max)}`;
+    default:
+      return "—";
+  }
+}
+
+function formatShortText(spec: any): string {
+  if (!spec) return "—";
+  const modeMap: Record<string,string> = {
+    exact: "exacto",
+    regex: "regex",
+    levenshtein: "levenshtein",
+  };
+  const mode = modeMap[spec.mode] ?? spec.mode ?? "—";
+  const answers = Array.isArray(spec.answers) ? spec.answers.filter(Boolean) : [];
+  const head = answers.slice(0, 3).map((s: string) => `“${s}”`).join(", ");
+  const more = answers.length > 3 ? ` (+${answers.length - 3})` : "";
+  const extra: string[] = [];
+  if (spec.threshold != null && spec.mode === "levenshtein") extra.push(`≤${spec.threshold}`);
+  if (spec.caseSensitive) extra.push("sens. mayúsc/minúsc");
+  if (spec.trim === false) extra.push("no-trim");
+  const suffix = extra.length ? ` · ${extra.join(", ")}` : "";
+  return `${head}${more} · modo: ${mode}${suffix}`;
+}
+
+function mcCorrectLabels(p: any): string[] {
+  // p.options puede ser [{text, correct}] (nuevo) o string[] (legacy)
+  if (Array.isArray(p.options) && typeof p.options[0] === "object") {
+    return p.options
+      .map((o: any) => (o?.correct ? (o?.text ?? "") : null))
+      .filter(Boolean);
+  }
+  // legacy: usa correctIndex
+  const opts = Array.isArray(p.options) ? p.options : [];
+  const idx = Number.isInteger(p.correctIndex) ? p.correctIndex : -1;
+  return idx >= 0 && idx < opts.length ? [opts[idx]] : [];
 }
 
 // --- Cargas ---
@@ -91,19 +153,25 @@ async function loadProblems() {
       limit(pageSize)
     );
     const snap = await getDocs(qRef);
-    problems.value = snap.docs.map((d) => ({
-      id: d.id,
-      ...(d.data() as any),
-      tags: d.data().tags ?? [],
-      difficulty: d.data().difficulty ?? "medium",
-      visibility: d.data().visibility ?? (isTeacherLike.value ? "private" : "public"),
-      version: d.data().version ?? 1,
-      options: Array.isArray(d.data().options) ? d.data().options : [],
-      correctIndex:
-        Number.isInteger(d.data().correctIndex) && d.data().correctIndex >= 0
-          ? d.data().correctIndex
-          : 0,
-    })) as Problem[];
+    problems.value = snap.docs.map((d) => {
+      const data = d.data() as any;
+      return {
+        id: d.id,
+        ...data,
+        title: data.title ?? d.id,
+        statement: data.statement ?? "",
+        tags: data.tags ?? [],
+        difficulty: data.difficulty ?? "medium",
+        visibility: data.visibility ?? (isTeacherLike.value ? "private" : "public"),
+        version: data.version ?? 1,
+        type: data.type,          // puede ser undefined (legacy)
+        options: Array.isArray(data.options) ? data.options : [],
+        correctIndex:
+          Number.isInteger(data.correctIndex) && data.correctIndex >= 0
+            ? data.correctIndex
+            : 0,
+      } as Problem;
+    });
   } catch (e: any) {
     console.error(e);
     error.value = e?.message ?? "No se pudieron cargar los problemas.";
@@ -202,15 +270,61 @@ watch([selectedTag, selectedDifficulty], loadProblems);
           </span>
         </div>
 
-        <!-- Opciones (solo teachers/admin) -->
-        <ul v-if="isTeacherLike" class="text-sm text-gray-700 mb-3">
-          <li v-for="(opt, i) in p.options" :key="i">
-            {{ String.fromCharCode(65 + i) }}) {{ opt }}
-            <span v-if="i === p.correctIndex">✔</span>
-          </li>
-        </ul>
+        <!-- Clave/solución SOLO visible para docentes -->
+        <div v-if="isTeacher" class="mt-2 text-xs text-gray-700">
+          <!-- Multiple choice: lista con check (nuevo y legacy) -->
+          <template v-if="p.type === 'multiple_choice'">
+            <div v-for="(opt, i) in p.options" :key="i" class="flex items-center gap-2">
+              <span class="font-mono">{{ String.fromCharCode(65+i) }})</span>
+              <code class="break-all">
+                {{
+                  typeof opt === 'string'
+                    ? `"${opt}"`
+                    : `{ "text": "${opt?.text ?? ''}", "correct": ${Boolean(opt?.correct)} }`
+                }}
+              </code>
+              <span
+                v-if="(typeof opt==='object' ? opt?.correct : i===p.correctIndex)"
+                class="text-purple-600"
+              >✔</span>
+            </div>
+          </template>
 
-        <div class="flex gap-2">
+          <!-- True/False -->
+          <template v-else-if="p.type === 'true_false'">
+            <div><span class="font-semibold">Clave:</span> {{ p?.answer?.correct ? 'Verdadero' : 'Falso' }} ✅</div>
+          </template>
+
+          <!-- Numérica -->
+          <template v-else-if="p.type === 'numeric'">
+            <div>
+              <span class="font-semibold">Clave:</span>
+              {{ formatNumericSpec(p.spec) }} ✅
+            </div>
+          </template>
+
+          <!-- Respuesta corta -->
+          <template v-else-if="p.type === 'short_text'">
+            <div>
+              <span class="font-semibold">Acepta:</span>
+              {{ formatShortText(p.spec) }} ✅
+            </div>
+          </template>
+
+          <!-- Abierta / Rubrica -->
+          <template v-else-if="p.type === 'open_rubric'">
+            <div><span class="font-semibold">Corrección manual</span> 📝 (rúbrica)</div>
+          </template>
+
+          <!-- Compat legacy: por si no hay 'type' pero sí hay MC legacy -->
+          <template v-else>
+            <div v-if="mcCorrectLabels(p).length">
+              <span class="font-semibold">Clave:</span> {{ mcCorrectLabels(p).join(", ") }} ✅
+            </div>
+          </template>
+        </div>
+
+        <div class="flex gap-2 mt-3">
           <router-link
             v-if="isTeacherLike"
             class="px-3 py-1 rounded border"
@@ -252,3 +366,4 @@ watch([selectedTag, selectedDifficulty], loadProblems);
     </div>
   </section>
 </template>
+
