@@ -1,99 +1,52 @@
 <!-- src/components/AppTopBar.vue -->
 <script setup lang="ts">
-import { RouterLink, useRoute, useRouter } from "vue-router";
-import { signOut } from "firebase/auth";
-import { auth } from "@/services/firebase";
-import { useProfileStore } from "@/stores/profile";
-import { storeToRefs } from "pinia";
 import { computed } from "vue";
+import { useRouter } from "vue-router";
+import { useProfileStore } from "@/stores/profile";
 
-const route = useRoute();
 const router = useRouter();
-
 const profile = useProfileStore();
-if (!profile.ready) profile.init?.();
 
-const { email, role, ready } = storeToRefs(profile);
+const isReady = computed(() => profile.ready);
+const role = computed(() => profile.role);
+const isTeacher = computed(() => role.value === "teacher" || role.value === "admin");
+const isStudent = computed(() => role.value === "student");
 
-const roleLower = computed(() => (role.value ?? "").toLowerCase());
-const isStudent = computed(() => roleLower.value === "student");
-const isTeacherLike = computed(() => roleLower.value === "teacher" || roleLower.value === "admin");
-
-async function logout() {
-  try {
-    await signOut(auth);
-    router.push({ name: "Login" });
-  } catch (e) {
-    console.error("logout error", e);
-    alert("No se pudo cerrar sesión");
-  }
+function go(name: string) {
+  router.push({ name });
 }
 </script>
 
 <template>
-  <header v-if="!route.meta?.hideHeader" class="w-full border-b bg-white">
-    <nav class="max-w-6xl mx-auto flex items-center gap-4 p-3">
-      <RouterLink to="/dashboard" class="font-semibold nav-link">EduApp</RouterLink>
+  <nav class="flex items-center gap-4 px-4 py-3 border-b bg-white">
+    <button class="font-semibold" @click="go('Dashboard')">EduApp</button>
 
-      <!-- Navegación base -->
-      <RouterLink to="/dashboard" class="nav-link">Dashboard</RouterLink>
-      <RouterLink to="/problems"  class="nav-link">Problemas</RouterLink>
-      <RouterLink v-if="role === 'teacher' || role === 'admin'" to="/reports"   class="nav-link">Reportes</RouterLink>
+    <!-- Enlaces visibles para TEACHER -->
+    <template v-if="isReady && isTeacher">
+      <button class="hover:underline" @click="go('Dashboard')">Dashboard</button>
+      <button class="hover:underline" @click="go('ProblemsList')">Problemas</button>
+      <button class="hover:underline" @click="go('Reports')">Reportes</button>
+      <button class="ml-auto px-3 py-1 border rounded" @click="go('AssignmentNew')">Nueva asignación</button>
+    </template>
 
-      <!-- Rama por rol -->
-      <RouterLink
-        v-if="ready && isStudent"
-        to="/assignments/my"
-        class="ml-2 inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg border hover:bg-gray-50"
-      >
-        Mis asignaciones
-      </RouterLink>
+    <!-- Enlaces visibles para STUDENT -->
+    <template v-else-if="isReady && isStudent">
+      <button class="hover:underline" @click="go('Dashboard')">Dashboard</button>
+      <button class="hover:underline" @click="go('ProblemsList')">Problemas</button>
+      <button class="hover:underline" @click="go('MyAssignments')">Mis asignaciones</button>
+    </template>
 
-      <template v-else-if="ready && isTeacherLike">
-        <RouterLink
-          to="/assignments/new"
-          class="ml-2 inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg border hover:bg-gray-50"
-        >
-          Nueva asignación
-        </RouterLink>
+    <!-- (Opcional) mientras carga perfil -->
+    <template v-else>
+      <span class="text-sm text-gray-500">Cargando…</span>
+    </template>
 
-        <RouterLink
-          v-if="route.params?.id"
-          :to="`/classes/${route.params.id}/assignments`"
-          class="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg border hover:bg-gray-50"
-        >
-          Asignaciones de la clase
-        </RouterLink>
-      </template>
-
-      <!-- Lado derecho -->
-      <div class="ml-auto flex items-center gap-3 text-sm text-gray-700">
-        <span v-if="ready && roleLower" class="px-2 py-0.5 rounded bg-gray-100 border capitalize">
-          {{ roleLower }}
-        </span>
-        <span v-if="ready && email">{{ email }}</span>
-
-        <button
-          class="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
-          @click="logout"
-        >
-          Cerrar sesión
-        </button>
-      </div>
-    </nav>
-  </header>
+    <!-- Perfil / sesión -->
+    <div class="ml-auto flex items-center gap-2" v-if="isReady">
+      <span class="text-xs px-2 py-0.5 rounded bg-gray-100">{{ role }}</span>
+      <span class="text-sm text-gray-600">{{ profile.email || '' }}</span>
+      <!-- tu botón Cerrar sesión ya existente va aquí -->
+    </div>
+  </nav>
 </template>
 
-<style scoped>
-.nav-link{
-  position: relative;
-  display: inline-block;
-  padding: .25rem .5rem;
-  border-radius: .375rem;
-  caret-color: transparent; /* oculta el cursor de texto */
-  user-select: none;
-  cursor: pointer;
-}
-.nav-link:hover { text-decoration: underline; }
-.nav-link:focus { outline: none; }
-</style>
