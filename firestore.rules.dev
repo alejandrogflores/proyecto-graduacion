@@ -2,7 +2,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    /* ===== Helpers ===== */
+    /* ========= Helpers ========= */
     function isSignedIn() { return request.auth != null; }
     function userPath(u) { return /databases/$(database)/documents/users/$(u); }
     function userRole() {
@@ -13,21 +13,30 @@ service cloud.firestore {
         : null;
     }
     function isTeacher() { return userRole() in ['teacher','admin']; }
-    function isStudent() { return isSignedIn() && (userRole() == 'student'); }
-    function isOwner(uid) { return isSignedIn() && (uid == request.auth.uid); }
+    function isStudent() { return isSignedIn() && userRole() == 'student'; }
+    function isOwner(uid) { return isSignedIn() && uid == request.auth.uid; }
     function hasField(obj, field) { return field in obj; }
 
-    // assignments helpers
-    function assgPath(id) { return /databases/$(database)/documents/assignments/$(id); }
-    function assgDoc(id)  { return get(assgPath(id)); }
-    function isAssigneeOnAssg(a) {
-      return ("assigneeUids" in a.data) && (request.auth.uid in a.data.assigneeUids);
+    // Paths/helpers de assignments/attempts
+    function assgPath(id)     { return /databases/$(database)/documents/assignments/$(id); }
+    function attemptPath(id)  { return /databases/$(database)/documents/attempts/$(id); }
+
+    function assgIsPublished(id) {
+      return exists(assgPath(id))
+        && hasField(get(assgPath(id)).data,'isPublished')
+        && get(assgPath(id)).data.isPublished == true;
+    }
+    function assgOwner(id) {
+      return exists(assgPath(id)) && hasField(get(assgPath(id)).data,'ownerUid')
+        ? get(assgPath(id)).data.ownerUid : null;
+    }
+    function isAssigneeOfAssg(id, uid) {
+      return exists(assgPath(id))
+        && hasField(get(assgPath(id)).data,'assigneeUids')
+        && (uid in get(assgPath(id)).data.assigneeUids);
     }
 
-    // ✅ attempts helper (faltaba)
-    function attemptPath(id) { return /databases/$(database)/documents/attempts/$(id); }
-
-    /* ===== users ===== */
+    /* ========= users ========= */
     match /users/{uid} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && isOwner(uid);
@@ -35,22 +44,20 @@ service cloud.firestore {
       allow delete: if isTeacher();
     }
 
-    /* ===== tags ===== */
+    /* ========= tags ========= */
     match /tags/{id} {
       allow read: if isSignedIn();
       allow write: if isTeacher();
     }
 
-    /* ===== problems ===== */
+    /* ========= problems ========= */
     match /problems/{id} {
       allow read: if isSignedIn();
       allow create: if isTeacher();
-      allow update, delete: if isTeacher()
-        && hasField(resource.data,'ownerUid')
-        && resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if isTeacher();
     }
 
-    /* ===== classes ===== */
+    /* ========= classes ========= */
     match /classes/{id} {
       allow read: if isSignedIn();
       allow create: if isTeacher()
@@ -59,97 +66,104 @@ service cloud.firestore {
       allow update, delete: if isTeacher();
     }
 
-    /* ===== assignments ===== */
+    /* ========= assignments ========= */
     match /assignments/{id} {
       function isOwnerOfAssg() {
-        return ("ownerUid" in resource.data) && resource.data.ownerUid == request.auth.uid;
+        return hasField(resource.data,'ownerUid')
+          && resource.data.ownerUid == request.auth.uid;
       }
       function isPublishedAssg() {
-        return ("isPublished" in resource.data) && resource.data.isPublished == true;
+        return hasField(resource.data,'isPublished')
+          && resource.data.isPublished == true;
       }
       function isAssignee() {
-        return ("assigneeUids" in resource.data)
-          ? (request.auth.uid in resource.data.assigneeUids)
-          : false;
+        return hasField(resource.data,'assigneeUids')
+          && (request.auth.uid in resource.data.assigneeUids);
       }
 
-      allow read: if isSignedIn() && (
+      // GET: control fino por documento
+      allow get: if isSignedIn() && (
         isTeacher() ? isOwnerOfAssg() : (isPublishedAssg() && isAssignee())
       );
 
+      // LIST: permisivo; Firestore aplicará 'get' por cada doc devuelto
+      allow list: if isSignedIn();
+
       allow create: if isTeacher()
-        && ("ownerUid" in request.resource.data)
+        && hasField(request.resource.data,'ownerUid')
         && request.resource.data.ownerUid == request.auth.uid;
 
       allow update, delete: if isTeacher() && isOwnerOfAssg();
     }
 
-    /* ===== attempts ===== */
+    /* ========= attempts ========= */
     match /attempts/{id} {
+      // GET individual (tolerante a docs viejos sin studentUid)
+      allow get: if !exists(attemptPath(id))
+        ? isStudent()
+        : (
+            isTeacher() ||
+            (isStudent() &&
+             hasField(get(attemptPath(id)).data,'studentUid') &&
+             get(attemptPath(id)).data.studentUid == request.auth.uid)
+          );
 
-      // Lectura de doc individual:
-      // - si NO existe, permite que el alumno consulte sin romper
-      // - si existe, teacher o el propio alumno
-      allow read: if !exists(attemptPath(id))
-                  ? isStudent()
-                  : (
-                      isTeacher() ||
-                      (isStudent() && get(attemptPath(id)).data.studentUid == request.auth.uid)
-                    );
+      // LIST: permisivo; 'get' filtra por doc
+      allow list: if isSignedIn();
 
-      // Listados / agregaciones (getCountFromServer) -> solo docentes
-      allow list: if isTeacher();
-
-      // Crear (alumno asignado a assignment publicada)
+      // Crear: solo alumno asignado en assignment publicado
       allow create: if isStudent()
         && hasField(request.resource.data,'studentUid')
         && request.resource.data.studentUid == request.auth.uid
         && hasField(request.resource.data,'assignmentId')
-        && exists(assgPath(request.resource.data.assignmentId))
-        && assgDoc(request.resource.data.assignmentId).data.isPublished == true
-        && isAssigneeOnAssg(assgDoc(request.resource.data.assignmentId))
-        && (!hasField(request.resource.data,'ownerUid')
-            || request.resource.data.ownerUid == assgDoc(request.resource.data.assignmentId).data.ownerUid)
+        && assgIsPublished(request.resource.data.assignmentId)
+        && isAssigneeOfAssg(request.resource.data.assignmentId, request.auth.uid)
         && hasField(request.resource.data,'answers')
         && (request.resource.data.answers is list)
-        && (hasField(request.resource.data,'finishedAt') ? request.resource.data.finishedAt == null : true);
+        && (hasField(request.resource.data,'finishedAt') ? request.resource.data.finishedAt == null : true)
+        && (!hasField(request.resource.data,'ownerUid')
+            || request.resource.data.ownerUid == assgOwner(request.resource.data.assignmentId));
 
-      // Actualizar (mientras no esté finalizado y sin cambiar ids)
+      // Actualizar: mismo alumno, intento abierto, sin cambiar identidad
       allow update: if isStudent()
         && exists(attemptPath(id))
-        && (get(attemptPath(id)).data.studentUid == request.auth.uid)
-        && (get(attemptPath(id)).data.finishedAt == null)
+        && hasField(get(attemptPath(id)).data,'studentUid')
+        && get(attemptPath(id)).data.studentUid == request.auth.uid
+        && hasField(get(attemptPath(id)).data,'assignmentId')
+        && get(attemptPath(id)).data.finishedAt == null
         && request.resource.data.studentUid == get(attemptPath(id)).data.studentUid
         && request.resource.data.assignmentId == get(attemptPath(id)).data.assignmentId;
 
-      // Borrar
       allow delete: if isTeacher();
     }
 
-    /* ===== submissions / achievements ===== */
+    /* ========= submissions ========= */
     match /submissions/{id} {
-      allow read: if isSignedIn() && (
+      // LIST permisivo; filtro por doc en GET
+      allow list: if isSignedIn();
+
+      allow get: if isSignedIn() && (
         isTeacher() ||
         (hasField(resource.data,'studentUid') && resource.data.studentUid == request.auth.uid)
       );
-      allow write: if isSignedIn() && (
+
+      allow create, update: if isSignedIn() && (
         isTeacher() ||
         (hasField(request.resource.data,'studentUid') && request.resource.data.studentUid == request.auth.uid)
       );
+
+      allow delete: if isTeacher();
     }
 
+    /* ========= achievements ========= */
     match /achievements/{id} {
       allow read: if isSignedIn();
       allow write: if isTeacher();
     }
 
-    /* ===== fallback ===== */
+    /* ========= fallback ========= */
     match /{document=**} {
       allow read, write: if false;
     }
   }
 }
-
-
-
-
