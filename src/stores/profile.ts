@@ -1,6 +1,11 @@
 // src/stores/profile.ts
 import { defineStore } from "pinia";
-import { onAuthStateChanged, getIdTokenResult, type User } from "firebase/auth";
+import {
+  onAuthStateChanged,
+  getIdTokenResult,
+  type User,
+  signOut,                // 👈 importa signOut
+} from "firebase/auth";
 import { auth, userDoc } from "@/services/firebase";
 import { getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 
@@ -14,7 +19,7 @@ interface ProfileState {
   displayName: string | null;
   photoURL: string | null;
   role: NullableRole;
-  lastClassId: string | null;        // ✅ agrega la propiedad al tipo
+  lastClassId: string | null;
   _unsub?: () => void;
 }
 
@@ -46,7 +51,7 @@ export const useProfileStore = defineStore("profile", {
     displayName: null,
     photoURL: null,
     role: null,
-    lastClassId: null,               // ✅ inicializa en null
+    lastClassId: null,
     _unsub: undefined,
   }),
 
@@ -55,7 +60,17 @@ export const useProfileStore = defineStore("profile", {
   },
 
   actions: {
-    // ✅ setter separado (no dentro de init)
+    // 👉 centraliza limpieza de estado
+    clear() {
+      this.uid = null;
+      this.email = null;
+      this.displayName = null;
+      this.photoURL = null;
+      this.role = null;
+      this.lastClassId = null;
+    },
+
+    // setter auxiliar ya existente
     setLastClassId(id: string) {
       this.lastClassId = id;
     },
@@ -69,8 +84,8 @@ export const useProfileStore = defineStore("profile", {
       this._unsub = onAuthStateChanged(auth, async (u) => {
         try {
           if (!u) {
-            this.uid = this.email = this.displayName = this.photoURL = null;
-            this.role = null;
+            // usuario deslogueado
+            this.clear();
             return;
           }
 
@@ -117,6 +132,18 @@ export const useProfileStore = defineStore("profile", {
       this.role = await resolveRole(u);
     },
 
+    // 👇 NUEVO: acción de logout tipada (soluciona el error en AppTopBar.vue)
+    async logout() {
+      try {
+        await signOut(auth);
+      } finally {
+        this.clear();
+        // opcional: mantener la suscripción para que init no se duplique
+        this.ready = true;
+      }
+    },
+
+    // mantiene la opción de reset manual (si la usas en otros flujos)
     reset() {
       if (this._unsub) {
         this._unsub();
@@ -126,4 +153,3 @@ export const useProfileStore = defineStore("profile", {
     },
   },
 });
-
