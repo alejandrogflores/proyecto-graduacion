@@ -3,7 +3,7 @@
 import { onMounted, ref, watch, computed } from "vue";
 import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
-import { getDocs, query, where, doc, getDoc, orderBy } from "firebase/firestore";
+import { getDocs, query, where, orderBy, limit } from "firebase/firestore";
 
 import { colAssignments, colAttempts } from "@/services/firebase";
 import { useProfileStore } from "@/stores/profile";
@@ -29,6 +29,8 @@ const rows = ref<AssignmentRow[]>([]);
 
 // estado por asignación: none | open | done
 const statusByAssg = ref<Record<string, "open" | "done" | "none">>({});
+// id del último intento terminado por asignación (para revisar resultados)
+const lastFinishedAttemptByAssg = ref<Record<string, string>>({});
 
 function fmtTs(ts: any): string {
   try {
@@ -45,17 +47,32 @@ async function hydrateStatuses(assignments: AssignmentRow[]) {
   const { uid } = storeToRefs(useProfileStore());
   const me = uid.value!;
   const map: Record<string, "open" | "done" | "none"> = {};
+  const latestDone: Record<string, { id: string; finishedAt: number }> = {};
 
   // Traer intentos del alumno (abiertos + entregados)
   const qMine = query(colAttempts, where("studentUid", "==", me));
   const qs = await getDocs(qMine);
+
   const byAssg: Record<string, { open: boolean; done: boolean }> = {};
   for (const d of qs.docs) {
     const a = d.data() as any;
     const k = a.assignmentId as string;
     if (!byAssg[k]) byAssg[k] = { open: false, done: false };
-    if (a.finishedAt) byAssg[k].done = true;
-    else byAssg[k].open = true;
+    if (a.finishedAt) {
+      byAssg[k].done = true;
+      const ts =
+        typeof a.finishedAt?.seconds === "number"
+          ? a.finishedAt.seconds * 1000
+          : typeof a.finishedAt === "number"
+          ? a.finishedAt
+          : Date.parse(a.finishedAt ?? 0);
+      const prev = latestDone[k];
+      if (!prev || ts > prev.finishedAt) {
+        latestDone[k] = { id: d.id, finishedAt: ts || 0 };
+      }
+    } else {
+      byAssg[k].open = true;
+    }
   }
 
   for (const a of assignments) {
@@ -64,7 +81,12 @@ async function hydrateStatuses(assignments: AssignmentRow[]) {
     else if (st.open) map[a.id] = "open";
     else map[a.id] = "none";
   }
+
   statusByAssg.value = map;
+  // guarda sólo el id del intento
+  const out: Record<string, string> = {};
+  Object.entries(latestDone).forEach(([k, v]) => (out[k] = v.id));
+  lastFinishedAttemptByAssg.value = out;
 }
 
 async function load() {
@@ -85,7 +107,7 @@ async function load() {
     const qs = await getDocs(qy);
     rows.value = qs.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as AssignmentRow[];
 
-    // estados
+    // estados + últimos intentos terminados
     await hydrateStatuses(rows.value);
   } catch (e: any) {
     console.error("[MyAssignments] load error:", e);
@@ -106,6 +128,11 @@ const deliveredList = computed(() =>
 
 function goPlay(id: string) {
   router.push({ name: "AssignmentPlay", params: { id } });
+}
+
+function goReview(assignmentId: string) {
+  // enviamos el assignmentId; dentro de la vista buscaremos el último intento del alumno
+  router.push({ name: "AssignmentReview", params: { id: assignmentId } });
 }
 </script>
 
@@ -176,7 +203,15 @@ function goPlay(id: string) {
                 </p>
               </div>
 
-              <span class="px-3 py-2 rounded border">Entregado</span>
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-1 rounded border text-gray-700 bg-gray-50">Entregado</span>
+                <button
+                  class="px-3 py-2 bg-black text-white rounded"
+                  @click="goReview(a.id)"
+                >
+                  Ver resultados
+                </button>
+              </div>
             </div>
           </li>
         </ul>
@@ -184,4 +219,5 @@ function goPlay(id: string) {
     </template>
   </section>
 </template>
+
 

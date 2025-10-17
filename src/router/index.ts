@@ -17,7 +17,7 @@ import AssignmentsByClass from "@/views/assignments/AssignmentsByClass.vue";
 import MyAssignments from "@/views/assignments/MyAssignments.vue";
 import SolveAssignment from "@/views/assignments/SolveAssignment.vue";
 
-// Reportes (usa el que sí existe en tu árbol)
+// Reportes
 import Reports from "@/views/reports/Reports.vue";
 
 const routes: RouteRecordRaw[] = [
@@ -26,24 +26,37 @@ const routes: RouteRecordRaw[] = [
 
   { path: "/dashboard", name: "Dashboard", component: Dashboard },
 
-  // ✅ Problemas
+  // Problemas
   { path: "/problems", name: "ProblemsList", component: ProblemsList },
   { path: "/problems/new", name: "ProblemNew", component: ProblemForm },
   { path: "/problems/:id/edit", name: "ProblemEdit", component: ProblemForm, props: true },
   { path: "/problems/:id", name: "ProblemSolve", component: ProblemSolve, props: true },
 
-  // ✅ Asignaciones (alumno/teacher)
+  // Asignaciones
   {
-    path: "/assignments/:id/play", name: "AssignmentPlay", component: () => import("@/views/assignments/AssignmentPlay.vue"), meta: { requiresAuth: true }, },
+    path: "/assignments/:id/play",
+    name: "AssignmentPlay",
+    component: () => import("@/views/assignments/AssignmentPlay.vue"),
+    meta: { requiresAuth: true },
+  },
   { path: "/assignments/new", name: "AssignmentNew", component: AssignmentForm, meta: { requiresAuth: true } },
-  { path: "/classes/:id/assignments", name: "AssignmentsByClass", component: AssignmentsByClass, props: true, meta: { requiresAuth: true }, },
+  { path: "/classes/:id/assignments", name: "AssignmentsByClass", component: AssignmentsByClass, props: true, meta: { requiresAuth: true } },
   { path: "/assignments/my", name: "MyAssignments", component: MyAssignments, meta: { requiresAuth: true } },
   { path: "/assignments/:id/solve", name: "SolveAssignment", component: SolveAssignment, props: true, meta: { requiresAuth: true } },
-  { path: "/assignments/:id/report", name: "AssignmentReport", component: () => import("@/views/reports/AssignmentReport.vue"), meta: { requiresAuth: true, teacherOnly: true }, props: true, },
-  // ✅ Reportes (solo docentes) → usa Reports.vue (existe en tu proyecto)
+
+  // NUEVA: revisión de resultados para alumno/teacher (no teacherOnly)
+  {
+    path: "/assignments/:id/review",
+    name: "AssignmentReview",
+    component: () => import("@/views/assignments/AssignmentReview.vue"),
+    meta: { requiresAuth: true },
+    props: true,
+  },
+
+  // Reportes (solo docentes)
   { path: "/reports", name: "Reports", component: Reports, meta: { requiresAuth: true, teacherOnly: true } },
 
-  // Intentos y detalle
+  // Intentos (docente)
   {
     path: "/attempts",
     name: "TeacherAttempts",
@@ -58,7 +71,7 @@ const routes: RouteRecordRaw[] = [
     props: true,
   },
 
-  // Reporte por asignación (si lo usas)
+  // (si ya lo tenías duplicado, deja uno solo)
   {
     path: "/assignments/:id/report",
     name: "AssignmentReport",
@@ -73,15 +86,11 @@ const router = createRouter({
   routes,
 });
 
-// Guard recomendado (preserva query/hash; redirige a login con redirect)
 router.beforeEach(async (to) => {
   if (to.name === "Login") return true;
 
   const profile = useProfileStore();
-
-  if (!profile.ready) {
-    await profile.init?.();
-  }
+  if (!profile.ready) await profile.init?.();
 
   if (!profile.uid) {
     return { name: "Login", query: { redirect: to.fullPath } };

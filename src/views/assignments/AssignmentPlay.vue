@@ -1,10 +1,10 @@
 <!-- src/views/assignments/AssignmentPlay.vue -->
 <script setup lang="ts">
-import { onMounted, ref, computed } from "vue";
+import { onMounted, ref, computed, onBeforeUnmount } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
-  getDoc, doc, getDocs, addDoc, updateDoc,
-  serverTimestamp, where, query, limit
+  getDoc, doc, addDoc, updateDoc,
+  serverTimestamp
 } from "firebase/firestore";
 
 import Countdown from "@/components/Countdown.vue";
@@ -16,7 +16,6 @@ import { useProfileStore } from "@/stores/profile";
 /* =========================
    Tipos de datos (locales)
    ========================= */
-// Acepta variantes con guion y con guion bajo
 type ProblemType =
   | "multiple-choice"
   | "true-false" | "true_false"
@@ -28,19 +27,13 @@ type Problem = {
   type: ProblemType;
   title?: string;
   statement?: string;
-
-  // MC / TF
-  options?: string[];
-  correctIndex?: number;     // MC o TF (0/1)
-  correctBoolean?: boolean;  // TF alternativo
-
-  // NUMERIC (acepta varios nombres de campo)
-  numericSpec?: any;
-  answerSpec?: any;
-  numeric?: any;
-
-  // SHORT TEXT (varias formas posibles)
-  textSpec?: any;            // { acceptable: string[], caseSensitive?, trim? }
+  options?: string[];         // MC/TF
+  correctIndex?: number;      // MC/TF
+  correctBoolean?: boolean;   // TF alternativo
+  numericSpec?: any;          // NUM
+  answerSpec?: any;           // NUM (alias)
+  numeric?: any;              // NUM (alias)
+  textSpec?: any;             // SHORT TEXT
   answerText?: string | string[];
   correctText?: string | string[];
   acceptable?: string[];
@@ -63,11 +56,8 @@ type AnswState = Record<string, MCState | TFState | NUMState | SHORTState>;
 
 type SavedAnswer = {
   problemId: string;
-  // MC/TF:
-  selectedIndex?: number;        // 0..N | -1
-  // Numeric:
+  selectedIndex?: number; // MC/TF (0..N | -1)
   valueNum?: number | null;
-  // Short text:
   valueText?: string | null;
   correct: boolean;
 };
@@ -90,12 +80,19 @@ const problems  = ref<Problem[]>([]);
 const answ      = ref<AnswState>({});
 const attemptId = ref<string | null>(null);
 
+// navegación problema a problema
+const idx = ref(0);
+const total = computed(() => problems.value.length);
+const current = computed(() => problems.value[idx.value] || null);
+const progressPct = computed(() =>
+  total.value ? Math.round(((idx.value + 1) / total.value) * 100) : 0
+);
+
 /* =========================
-   Utilidades
+   Utilidades de evaluación
    ========================= */
-// Normaliza tipo: "true_false" -> "true-false", "short_text" -> "short-text"
-const normType = (t: any) =>
-  String(t || "").toLowerCase().replace(/_/g, "-");
+// Normaliza tipo: "true_false" -> "true-false"
+const normType = (t: any) => String(t || "").toLowerCase().replace(/_/g, "-");
 
 // Obtén el "spec" numérico sin importar el nombre del campo usado
 function getNumericSpec(p: Problem): any | null {
@@ -131,7 +128,6 @@ function evalNumeric(spec: any, value: number | null): boolean {
     return spec.values.some((x: any) => Number(x) === value);
   }
 
-  // fallback: si solo hay 'value'
   if (Number.isFinite(spec?.value)) {
     return Math.abs(value - Number(spec.value)) <= (Number(spec.tolerance) || 0);
   }
@@ -154,9 +150,22 @@ function normText(s: string, caseSensitive: boolean, trim: boolean) {
   let out = s ?? "";
   if (trim) out = out.trim();
   if (!caseSensitive) out = out.toLowerCase();
-  // quitar acentos
-  out = out.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  out = out.normalize("NFD").replace(/\p{Diacritic}/gu, ""); // quita acentos
   return out;
+}
+
+/* =========================
+   Formateo tiempo límite (mm:ss)
+   ========================= */
+function fmtDurationSec(s?: number | null) {
+  if (!Number.isFinite(Number(s))) return "—";
+  const n = Number(s);
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  const sec = Math.floor(n % 60);
+  const mm = String(m).padStart(2, "0");
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
 /* =========================
@@ -181,7 +190,7 @@ async function loadAssignmentAndProblems() {
     };
     assg.value = a;
 
-    // 2) Cargar problemas (uno por uno para simplicidad)
+    // 2) Cargar problemas
     const list: Problem[] = [];
     for (const pid of a.problemIds) {
       const ps = await getDoc(doc(colProblems, pid));
@@ -189,7 +198,7 @@ async function loadAssignmentAndProblems() {
       const d = ps.data() as any;
       list.push({
         id: pid,
-        type: normType(d.type) as ProblemType, // normaliza
+        type: normType(d.type) as ProblemType,
         title: d.title,
         statement: d.statement,
         options: d.options,
@@ -204,11 +213,12 @@ async function loadAssignmentAndProblems() {
     // 3) Inicializar respuestas en blanco
     const init: AnswState = {};
     for (const p of list) {
-      if (p.type === "multiple-choice") init[p.id] = { selectedIndex: null } as MCState;
-      else if (p.type === "true-false")  init[p.id] = { value: null } as TFState;
-      else if (p.type === "short-text")  init[p.id] = { value: "" } as SHORTState;
-      else if (p.type === "numeric")     init[p.id] = { value: "" } as NUMState;
-      else                               init[p.id] = { value: "" } as any; // fallback
+      const t = p.type;
+      if (t === "multiple-choice") init[p.id] = { selectedIndex: null } as MCState;
+      else if (t === "true-false")  init[p.id] = { value: null } as TFState;
+      else if (t === "short-text")  init[p.id] = { value: "" } as SHORTState;
+      else if (t === "numeric")     init[p.id] = { value: "" } as NUMState;
+      else                          init[p.id] = { value: "" } as any;
     }
     answ.value = init;
 
@@ -229,17 +239,19 @@ async function ensureOpenAttempt() {
   const open = await getOpenAttempt(assg.value.id, profile.uid);
   if (open) {
     attemptId.value = open.id;
+    // Si guardas borradores previos, aquí puedes hidratar answ.value leyendo open.answersDraft
     return;
   }
 
-  // Crear uno nuevo (finishedAt = null por reglas)
+  // Crear uno nuevo (finishedAt = null)
   const docRef = await addDoc(colAttempts, {
     assignmentId: assg.value.id,
     assignmentTitle: assg.value.title ?? assg.value.id,
     ownerUid: assg.value.ownerUid,
     studentUid: profile.uid,
     studentEmail: profile.email ?? null,
-    answers: [],
+    answersDraft: [],       // se llena mientras navega
+    answers: [],            // final al enviar
     correctCount: 0,
     total: problems.value.length,
     score: 0,
@@ -251,10 +263,8 @@ async function ensureOpenAttempt() {
 }
 
 /* =========================
-   Envío / evaluación
+   Borrador y envío
    ========================= */
-const canSubmit = computed(() => !!attemptId.value && !saving.value);
-
 function buildAnswerFor(p: Problem): SavedAnswer {
   // Multiple choice
   if (p.type === "multiple-choice") {
@@ -264,7 +274,7 @@ function buildAnswerFor(p: Problem): SavedAnswer {
     return { problemId: p.id, selectedIndex: idx ?? -1, correct };
   }
 
-  // True / False (acepta correctIndex o correctBoolean)
+  // True / False
   if (p.type === "true-false") {
     const s = answ.value[p.id] as TFState;
     const val = s?.value; // boolean | null
@@ -277,7 +287,6 @@ function buildAnswerFor(p: Problem): SavedAnswer {
       correct = (sel === p.correctIndex);
       return { problemId: p.id, selectedIndex: sel, correct };
     } else {
-      // si no hay solución configurada, considera válido si respondió
       correct = val !== null;
     }
     const sel = val === null ? -1 : (val ? 0 : 1);
@@ -291,7 +300,7 @@ function buildAnswerFor(p: Problem): SavedAnswer {
     const spec = getTextSpec(p);
     let ok = false;
     if (spec.acceptable.length === 0) {
-      ok = input.trim().length > 0; // sin respuestas configuradas, solo validar que no esté vacío
+      ok = input.trim().length > 0;
     } else {
       const nInput = normText(input, spec.caseSensitive, spec.trim);
       ok = spec.acceptable.some(a => normText(String(a), spec.caseSensitive, spec.trim) === nInput);
@@ -302,12 +311,11 @@ function buildAnswerFor(p: Problem): SavedAnswer {
   // Numeric
   if (p.type === "numeric") {
     const s = answ.value[p.id] as NUMState;
-    const raw = s?.value ?? "";                    // puede venir como number o string
+    const raw = s?.value ?? "";
     let num: number | null;
 
-    if (typeof raw === "number") {
-      num = Number.isFinite(raw) ? raw : null;
-    } else {
+    if (typeof raw === "number") num = Number.isFinite(raw) ? raw : null;
+    else {
       const v = String(raw).trim();
       num = v === "" ? null : Number(v.replace(",", "."));
     }
@@ -326,6 +334,19 @@ function buildAnswerFor(p: Problem): SavedAnswer {
   return { problemId: p.id, selectedIndex: -1, correct: false };
 }
 
+async function saveDraft() {
+  // Guarda “answersDraft” con lo respondido hasta el momento (sin finishedAt)
+  if (!attemptId.value) return;
+  const draft = problems.value.map(buildAnswerFor);
+  try {
+    await updateDoc(attemptDoc(attemptId.value), { answersDraft: draft, savedAt: serverTimestamp() });
+  } catch (e) {
+    console.warn("[AssignmentPlay] saveDraft warn:", e);
+  }
+}
+
+const canSubmit = computed(() => !!attemptId.value && !saving.value);
+
 async function submit() {
   if (!assg.value || !attemptId.value || saving.value) return;
   saving.value = true;
@@ -334,15 +355,20 @@ async function submit() {
   try {
     const answers: SavedAnswer[] = problems.value.map(buildAnswerFor);
     const correctCount = answers.filter(a => a.correct).length;
-    const total = problems.value.length;
-    const score = Math.round((correctCount / Math.max(1, total)) * 100);
+    const totalN = problems.value.length;
+    const score = Math.round((correctCount / Math.max(1, totalN)) * 100);
     const finishedAt = serverTimestamp();
 
     await updateDoc(attemptDoc(attemptId.value), {
-      answers, correctCount, total, score, finishedAt
+      answersDraft: answers,   // conservamos también el borrador final
+      answers,
+      correctCount,
+      total: totalN,
+      score,
+      finishedAt
     });
 
-    alert(`¡Enviado! Aciertos: ${correctCount}/${total} (${score}%)`);
+    alert(`¡Enviado! Aciertos: ${correctCount}/${totalN} (${score}%)`);
     router.push({ name: "MyAssignments" });
   } catch (e: any) {
     console.error("[AssignmentPlay] submit error", e);
@@ -356,16 +382,47 @@ function onTimeUp() {
   if (!saving.value) submit();
 }
 
+/* =========================
+   Navegación problema a problema
+   ========================= */
+function goNext() {
+  if (idx.value < total.value - 1) {
+    saveDraft();
+    idx.value += 1;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+function goPrev() {
+  if (idx.value > 0) {
+    saveDraft();
+    idx.value -= 1;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+function goTo(i: number) {
+  if (i >= 0 && i < total.value) {
+    saveDraft();
+    idx.value = i;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+
+onBeforeUnmount(() => { saveDraft(); });
 onMounted(loadAssignmentAndProblems);
 </script>
 
 <template>
   <section class="max-w-5xl mx-auto p-4">
     <header class="flex items-center justify-between gap-3 mb-4">
-      <h1 class="text-2xl font-bold">Resolver: {{ assg?.title ?? id }}</h1>
+      <div>
+        <h1 class="text-2xl font-bold">Resolver: {{ assg?.title ?? id }}</h1>
+        <div class="mt-1 text-sm text-gray-600" v-if="total">
+          Pregunta {{ idx + 1 }} de {{ total }} — Progreso: {{ progressPct }}%
+        </div>
+      </div>
 
       <div v-if="assg?.timeLimitSec" class="flex items-center gap-2">
-        <span class="px-2 py-1 rounded border">Tiempo límite: {{ assg.timeLimitSec }}s</span>
+        <span class="px-2 py-1 rounded border">Tiempo límite: {{ fmtDurationSec(assg.timeLimitSec) }}</span>
         <span class="px-2 py-1 rounded bg-black text-white">
           Restante:
           <Countdown :seconds="assg.timeLimitSec" @finished="onTimeUp" />
@@ -376,26 +433,37 @@ onMounted(loadAssignmentAndProblems);
     <p v-if="loading">Cargando…</p>
     <p v-else-if="errorMsg" class="text-red-600">{{ errorMsg }}</p>
 
-    <div v-else class="space-y-4">
-      <div
-        v-for="(p, i) in problems"
-        :key="p.id"
-        class="bg-white border rounded p-4"
-      >
+    <div v-else>
+      <!-- Mini navegador de preguntas -->
+      <div class="flex flex-wrap gap-2 mb-4">
+        <button
+          v-for="(p, i) in problems"
+          :key="p.id"
+          class="px-2 py-1 rounded border text-sm"
+          :class="i === idx ? 'bg-black text-white' : 'bg-white hover:bg-gray-50'"
+          @click="goTo(i)"
+        >
+          {{ i + 1 }}
+        </button>
+      </div>
+
+      <!-- Problema actual -->
+      <div v-if="current" class="bg-white border rounded p-4 mb-4">
         <h3 class="font-semibold mb-1">
-          Pregunta {{ i + 1 }} — {{ p.title || p.id }}
+          Pregunta {{ idx + 1 }} — {{ current.title || current.id }}
         </h3>
-        <p class="text-gray-600 mb-3">{{ p.statement }}</p>
+        <p class="text-gray-600 mb-3">{{ current.statement }}</p>
 
         <!-- Multiple choice -->
-        <div v-if="p.type === 'multiple-choice'">
-          <div v-for="(opt, idx) in p.options || []" :key="idx" class="mb-2">
+        <div v-if="current.type === 'multiple-choice'">
+          <div v-for="(opt, i) in current.options || []" :key="i" class="mb-2">
             <label class="flex items-center gap-2 cursor-pointer">
               <input
                 type="radio"
-                :name="`mc_${p.id}`"
-                :value="idx"
-                v-model="(answ[p.id] as any).selectedIndex"
+                :name="`mc_${current.id}`"
+                :value="i"
+                v-model="(answ[current.id] as any).selectedIndex"
+                @change="saveDraft"
               />
               <span>{{ opt }}</span>
             </label>
@@ -403,23 +471,25 @@ onMounted(loadAssignmentAndProblems);
         </div>
 
         <!-- True / False -->
-        <div v-else-if="p.type === 'true-false'">
+        <div v-else-if="current.type === 'true-false'">
           <div class="space-y-2">
             <label class="flex items-center gap-2 cursor-pointer">
               <input
                 type="radio"
-                :name="`tf_${p.id}`"
+                :name="`tf_${current.id}`"
                 :value="true"
-                v-model="(answ[p.id] as any).value"
+                v-model="(answ[current.id] as any).value"
+                @change="saveDraft"
               />
               <span>Verdadero</span>
             </label>
             <label class="flex items-center gap-2 cursor-pointer">
               <input
                 type="radio"
-                :name="`tf_${p.id}`"
+                :name="`tf_${current.id}`"
                 :value="false"
-                v-model="(answ[p.id] as any).value"
+                v-model="(answ[current.id] as any).value"
+                @change="saveDraft"
               />
               <span>Falso</span>
             </label>
@@ -427,25 +497,27 @@ onMounted(loadAssignmentAndProblems);
         </div>
 
         <!-- Short text -->
-        <div v-else-if="p.type === 'short-text'">
+        <div v-else-if="current.type === 'short-text'">
           <input
             type="text"
             class="border rounded px-3 py-2 w-64"
             placeholder="Tu respuesta"
-            v-model="(answ[p.id] as any).value"
+            v-model="(answ[current.id] as any).value"
+            @input="saveDraft"
           />
           <p class="text-xs text-gray-500 mt-2">Escribe tu respuesta corta.</p>
         </div>
 
         <!-- Numeric -->
-        <div v-else-if="p.type === 'numeric'">
+        <div v-else-if="current.type === 'numeric'">
           <input
             type="number"
             inputmode="decimal"
             step="any"
             class="border rounded px-3 py-2 w-40"
             placeholder="Tu respuesta"
-            v-model="(answ[p.id] as any).value"
+            v-model="(answ[current.id] as any).value"
+            @input="saveDraft"
           />
           <p class="text-xs text-gray-500 mt-2">
             Ingresa un número. Se valida contra el rango/tolerancia definidos.
@@ -454,22 +526,43 @@ onMounted(loadAssignmentAndProblems);
 
         <!-- fallback -->
         <div v-else class="text-red-600">
-          Tipo no soportado: {{ p.type }}
+          Tipo no soportado: {{ current.type }}
         </div>
       </div>
 
-      <div class="flex items-center gap-3 pt-2">
+      <!-- Controles de navegación -->
+      <div class="flex items-center justify-between gap-3">
         <button
-          class="px-4 py-2 rounded bg-black text-white disabled:opacity-50"
-          :disabled="!canSubmit"
-          @click="submit"
+          class="px-4 py-2 rounded border disabled:opacity-50"
+          :disabled="idx === 0"
+          @click="goPrev"
         >
-          Enviar respuestas
+          ← Anterior
         </button>
-        <span v-if="saving">Guardando…</span>
+
+        <div class="text-sm text-gray-600">Pregunta {{ idx + 1 }} / {{ total }}</div>
+
+        <div class="flex items-center gap-2">
+          <button
+            v-if="idx < total - 1"
+            class="px-4 py-2 rounded bg-black text-white"
+            @click="goNext"
+          >
+            Siguiente →
+          </button>
+
+          <button
+            v-else
+            class="px-4 py-2 rounded bg-black text-white disabled:opacity-50"
+            :disabled="!canSubmit"
+            @click="submit"
+          >
+            Enviar respuestas
+          </button>
+        </div>
       </div>
+
+      <div class="mt-2 text-sm" v-if="saving">Guardando…</div>
     </div>
   </section>
 </template>
-
-
