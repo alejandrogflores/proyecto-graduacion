@@ -2,169 +2,278 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from "vue";
 import { useRoute } from "vue-router";
-import { storeToRefs } from "pinia";
-import { query, where, orderBy, limit, getDocs, doc, getDoc } from "firebase/firestore";
+import {
+  getDoc, doc, getDocs, query, where, orderBy, limit
+} from "firebase/firestore";
 
-import { colAttempts, colAssignments, colProblems } from "@/services/firebase";
+import {
+  assignmentDoc, colProblems, colAttempts
+} from "@/services/firebase";
 import { useProfileStore } from "@/stores/profile";
+
+/* ===== Tipos compatibles con lo que guardamos en el intento ===== */
+type ProblemType =
+  | "multiple-choice"
+  | "true-false" | "true_false"
+  | "numeric"
+  | "short-text" | "short_text";
 
 type Problem = {
   id: string;
-  type?: string;                // "multiple-choice" | "true-false" | "numeric" | "short-text"
+  type: ProblemType;
   title?: string;
   statement?: string;
-  options?: string[];           // MC/TF
-  correctIndex?: number;        // MC/TF
-  correctBoolean?: boolean;     // TF alternativo
-  numericSpec?: any;            // NUM (opcional si quieres re-evaluar)
-  answerSpec?: any;
-  numeric?: any;
-  textSpec?: any;               // SHORT TEXT
-  answerText?: string | string[];
-  correctText?: string | string[];
-  acceptable?: string[];
+  // MC/TF
+  options?: string[];      // <- normalizado a string[]
+  correctIndex?: number;
+  correctBoolean?: boolean;
+  // NUM / TEXT
+  numericSpec?: any;
+  textSpec?: any;
+  // feedback configurado en el problema (opcional)
+  explanations?: string[];
+  explanationCorrect?: string;
+  explanationWrong?: string;
+  explanation?: string;
+  explanationTemplateWrong?: string;
 };
 
-type Answer = {
+type SavedAnswer = {
   problemId: string;
-  selectedIndex?: number;       // MC/TF
-  valueNum?: number | null;     // NUM
-  valueText?: string | null;    // SHORT
-  correct?: boolean;
+  selectedIndex?: number;    // MC/TF
+  valueNum?: number | null;  // NUM
+  valueText?: string | null; // SHORT
+  correct: boolean;
+  feedback?: string;
+};
+
+type ReviewRow = {
+  p: Problem;
+  a: SavedAnswer | null;
 };
 
 const route = useRoute();
-const assignmentId = route.params.id as string;
-
 const profile = useProfileStore();
 if (!profile.ready) profile.init?.();
 
+const id = computed(() => String(route.params.id)); // assignmentId
+
 const loading = ref(true);
 const errorMsg = ref("");
-const attempt: any = ref(null);
-const assignment: any = ref(null);
-const problems = ref<Problem[]>([]);
+const assgTitle = ref<string>("");
+const finishedAtStr = ref<string>("-");
+const score = ref<number>(0);
+const total = ref<number>(0);
 
-function toDate(ts: any): Date | null {
-  if (!ts) return null;
-  if (typeof ts.toDate === "function") return ts.toDate();
-  if (typeof ts.seconds === "number") return new Date(ts.seconds * 1000);
-  const d = new Date(ts);
-  return isNaN(d.getTime()) ? null : d;
+const rows = ref<ReviewRow[]>([]);
+
+/* ===== helpers ===== */
+const normType = (t: any) => String(t || "").toLowerCase().replace(/_/g, "-");
+
+function getNumericSpec(p: Problem): any | null {
+  return p.numericSpec ?? null;
 }
-
-const finishedAtText = computed(() => {
-  const d = toDate(attempt.value?.finishedAt);
-  return d ? d.toLocaleString() : "—";
-});
-const scoreText = computed(() => {
-  const sc = attempt.value?.score;
-  if (typeof sc === "number") return `${sc}`;
-  if (typeof attempt.value?.summary?.score === "number") return `${attempt.value.summary.score}`;
-  return "—";
-});
-
-const answersByProblem = computed<Record<string, Answer>>(() => {
-  const arr: Answer[] = Array.isArray(attempt.value?.answers) ? attempt.value.answers : [];
-  const map: Record<string, Answer> = {};
-  for (const a of arr) map[a.problemId] = a;
-  return map;
-});
-
-function tfLabelFromIndex(i: number | undefined) {
-  if (i === 0) return "Verdadero";
-  if (i === 1) return "Falso";
+function getTextSpec(p: Problem): { acceptable: string[]; caseSensitive: boolean; trim: boolean } {
+  const raw = p.textSpec ?? null;
+  let acceptable: string[] = [];
+  if (Array.isArray(raw?.answers)) acceptable = raw.answers.map(String);
+  else if (Array.isArray(raw)) acceptable = raw.map(String);
+  else if (typeof raw === "string") acceptable = [raw];
+  const caseSensitive = Boolean((p.textSpec as any)?.caseSensitive);
+  const trim = (p.textSpec as any)?.trim === false ? false : true;
+  return { acceptable, caseSensitive, trim };
+}
+function optLabel(opt: any): string {
+  if (opt == null) return "—";
+  if (typeof opt === "object") return String(opt?.text ?? "");
+  return String(opt);
+}
+function tfLabelFromIndex(idx: number | undefined): string {
+  if (idx === 0) return "Verdadero";
+  if (idx === 1) return "Falso";
   return "—";
 }
-function optionLabel(p: Problem, idx: number | null | undefined): string {
-  if (idx === null || idx === undefined) return "—";
-  if (p.type === "true-false") return tfLabelFromIndex(idx);
-  if (Array.isArray(p.options)) return p.options[idx] ?? String(idx);
-  return String(idx);
+function tfLabelFromBool(b: boolean | undefined): string {
+  if (b === true) return "Verdadero";
+  if (b === false) return "Falso";
+  return "—";
 }
-function correctAnswerText(p: Problem): string {
-  if (typeof p.correctIndex === "number") return optionLabel(p, p.correctIndex);
-  if (typeof p.correctBoolean === "boolean") return p.correctBoolean ? "Verdadero" : "Falso";
-  if (Array.isArray(p.acceptable)) return p.acceptable.join(" / ");
-  if (typeof p.correctText === "string") return p.correctText;
-  if (typeof p.answerText === "string") return p.answerText;
+function tpl(t: string, data: Record<string, any>) {
+  return String(t || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => String(data[k] ?? ""));
+}
+function fallbackFeedback(p: Problem, a: SavedAnswer | null): string | undefined {
+  if (!a) return undefined;
+  const t = p.type;
+  if (t === "multiple-choice" || t === "true-false") {
+    const idx = a.selectedIndex ?? -1;
+    if (Array.isArray(p.explanations) && p.explanations[idx]) return p.explanations[idx];
+    if (a.correct) return p.explanationCorrect || p.explanation || "¡Correcto!";
+    return p.explanationWrong || p.explanation || "Revisa la propiedad/definición relacionada.";
+  }
+  if (t === "numeric") {
+    if (a.correct) return p.explanationCorrect || "¡Correcto!";
+    const x = a.valueNum;
+    const x2 = typeof x === "number" ? x * x : "—";
+    if (p.explanationTemplateWrong) return tpl(p.explanationTemplateWrong, { x, x2 });
+    return p.explanationWrong || p.explanation || "Resultado numérico fuera del esperado.";
+  }
+  if (t === "short-text") {
+    if (a.correct) return p.explanationCorrect || "¡Correcto!";
+    const x = a.valueText ?? "";
+    if (p.explanationTemplateWrong) return tpl(p.explanationTemplateWrong, { x });
+    return p.explanationWrong || p.explanation || "La respuesta no coincide con lo esperado.";
+  }
+  return undefined;
+}
+
+/* ===== render helpers (texto que ve el alumno) ===== */
+function renderUserAnswer(p: Problem, a: SavedAnswer | null): string {
+  if (!a) return "—";
+  const t = p.type;
+  if (t === "multiple-choice") {
+    const idx = a.selectedIndex ?? -1;
+    const opt = (p.options ?? [])[idx];
+    return optLabel(opt);
+  }
+  if (t === "true-false") {
+    return tfLabelFromIndex(a.selectedIndex);
+  }
+  if (t === "numeric") {
+    return a.valueNum == null ? "—" : String(a.valueNum);
+  }
+  if (t === "short-text") {
+    return a.valueText && a.valueText !== "" ? String(a.valueText) : "—";
+  }
   return "—";
 }
 
-const rows = computed(() => {
-  const map = answersByProblem.value;
-  return problems.value.map((p, i) => {
-    const a = map[p.id];
-
-    let userText = "—";
-    if (!a) userText = "No respondida";
-    else if (p.type === "multiple-choice" || p.type === "true-false") {
-      userText = optionLabel(p, a.selectedIndex ?? null);
-    } else if (p.type === "numeric") {
-      userText = a.valueNum === null || a.valueNum === undefined ? "—" : String(a.valueNum);
-    } else if (p.type === "short-text") {
-      userText = a.valueText ?? "—";
+function renderCorrectAnswer(p: Problem): string {
+  const t = p.type;
+  if (t === "multiple-choice") {
+    const idx = p.correctIndex ?? -1;
+    const opt = (p.options ?? [])[idx];
+    return optLabel(opt);
+  }
+  if (t === "true-false") {
+    if (typeof p.correctBoolean === "boolean") return tfLabelFromBool(p.correctBoolean);
+    return tfLabelFromIndex(p.correctIndex);
+  }
+  if (t === "numeric") {
+    const s = getNumericSpec(p);
+    if (!s) return "—";
+    const mode = String(s.mode ?? "").toLowerCase();
+    if (mode === "value" || mode === "tolerance") {
+      const tol = Number.isFinite(s.tolerance) ? ` ±${s.tolerance}` : "";
+      return `${s.value}${tol}`;
     }
+    if (mode === "range") return `[${s.min}, ${s.max}]`;
+    if (Array.isArray(s.values)) return s.values.join(", ");
+    if (Number.isFinite(s.value)) return String(s.value);
+    return "—";
+  }
+  if (t === "short-text") {
+    const s = getTextSpec(p);
+    return s.acceptable.length ? s.acceptable.join(" / ") : "—";
+  }
+  return "—";
+}
 
-    const ok = a?.correct === true; // ya guardamos 'correct' al enviar
-    return {
-      i: i + 1,
-      statement: p.statement ?? p.title ?? `Pregunta ${i + 1}`,
-      userAnswerText: userText,
-      correctAnswerText: correctAnswerText(p),
-      ok,
-    };
-  });
-});
-
+/* ===== Carga ===== */
 async function load() {
   if (!profile.uid) return;
   loading.value = true;
   errorMsg.value = "";
-  try {
-    // Asignación
-    const assgDoc = await getDoc(doc(colAssignments, assignmentId));
-    assignment.value = assgDoc.exists() ? assgDoc.data() : { id: assignmentId };
 
-    // Último intento terminado del alumno
+  try {
+    // 1) Asignación
+    const as = await getDoc(assignmentDoc(id.value));
+    if (!as.exists()) throw new Error("Asignación no encontrada.");
+    const aData = as.data() as any;
+    assgTitle.value = aData?.title ?? id.value;
+
+    // 2) Problemas (normaliza opciones)
+    const probs: Problem[] = [];
+    const ids: string[] = Array.isArray(aData?.problemIds) ? aData.problemIds : [];
+    for (const pid of ids) {
+      const ps = await getDoc(doc(colProblems, pid));
+      if (!ps.exists()) continue;
+      const d = ps.data() as any;
+
+      const tNorm = normType(d.type) as ProblemType;
+      let optionsText: string[] | undefined = undefined;
+      let cIdx: number | undefined = undefined;
+
+      if (tNorm === "multiple-choice") {
+        if (Array.isArray(d.options) && d.options.length > 0) {
+          if (typeof d.options[0] === "object") {
+            optionsText = d.options.map((o: any) => o?.text ?? "");
+            const found = d.options.findIndex((o: any) => o?.correct);
+            cIdx = Number.isInteger(d.correctIndex) ? d.correctIndex : (found >= 0 ? found : 0);
+          } else {
+            optionsText = d.options as string[];
+            cIdx = Number.isInteger(d.correctIndex) ? d.correctIndex : 0;
+          }
+        } else {
+          optionsText = [];
+          cIdx = 0;
+        }
+      }
+
+      const correctBool =
+        typeof d.correctBoolean === "boolean"
+          ? d.correctBoolean
+          : (typeof d.answer?.correct === "boolean" ? d.answer.correct : undefined);
+
+      probs.push({
+        id: pid,
+        type: tNorm,
+        title: d.title,
+        statement: d.statement,
+        options: optionsText,
+        correctIndex: cIdx,
+        correctBoolean: correctBool,
+        numericSpec: d.numericSpec ?? d.answerSpec ?? d.numeric ?? null,
+        textSpec: d.textSpec ?? d.answerText ?? d.correctText ?? d.acceptable ?? null,
+        explanations: d.explanations ?? null,
+        explanationCorrect: d.explanationCorrect ?? null,
+        explanationWrong: d.explanationWrong ?? null,
+        explanation: d.explanation ?? null,
+        explanationTemplateWrong: d.explanationTemplateWrong ?? null,
+      });
+    }
+
+    // 3) Último intento entregado del alumno
     const qy = query(
       colAttempts,
-      where("assignmentId", "==", assignmentId),
-      where("studentUid", "==", profile.uid!),
+      where("assignmentId", "==", id.value),
+      where("studentUid", "==", profile.uid),
       where("finishedAt", "!=", null),
       orderBy("finishedAt", "desc"),
       limit(1)
     );
     const qs = await getDocs(qy);
-    if (qs.empty) throw new Error("No se encontró un intento entregado para esta asignación.");
-    attempt.value = { id: qs.docs[0].id, ...(qs.docs[0].data() as any) };
+    if (qs.empty) throw new Error("No tienes intentos entregados para esta asignación.");
 
-    // Cargar problems en el mismo orden del assignment
-    const ids: string[] = Array.isArray(assignment.value?.problemIds) ? assignment.value.problemIds : [];
-    const list: Problem[] = [];
-    for (const pid of ids) {
-      const ps = await getDoc(doc(colProblems, pid));
-      if (!ps.exists()) continue;
-      const d = ps.data() as any;
-      list.push({
-        id: pid,
-        type: String(d.type || "").toLowerCase().replace(/_/g, "-"),
-        title: d.title,
-        statement: d.statement,
-        options: d.options,
-        correctIndex: d.correctIndex,
-        correctBoolean: d.correctBoolean,
-        numericSpec: d.numericSpec ?? d.answerSpec ?? d.numeric ?? null,
-        textSpec: d.textSpec ?? d.answerText ?? d.correctText ?? d.acceptable ?? null,
-        acceptable: Array.isArray(d.acceptable) ? d.acceptable : (Array.isArray(d.correctText) ? d.correctText : undefined),
-        correctText: d.correctText,
-        answerText: d.answerText,
-      });
+    const at = qs.docs[0].data() as any;
+    score.value = Number(at?.score ?? 0);
+    total.value = Number(at?.total ?? probs.length ?? 0);
+    try {
+      const ts = at?.finishedAt?.toDate?.() ?? null;
+      finishedAtStr.value = ts ? new Date(ts).toLocaleString() : "—";
+    } catch {
+      finishedAtStr.value = "—";
     }
-    problems.value = list;
+
+    // 4) Mapear filas problema-respuesta
+    const byId: Record<string, SavedAnswer> = {};
+    (Array.isArray(at?.answers) ? at.answers : []).forEach((a: any) => {
+      if (a?.problemId) byId[a.problemId] = a as SavedAnswer;
+    });
+
+    rows.value = probs.map((p) => ({ p, a: byId[p.id] ?? null }));
   } catch (e: any) {
     console.error("[AssignmentReview] load error:", e);
-    errorMsg.value = e?.message ?? "No fue posible cargar la revisión.";
+    errorMsg.value = e?.message ?? "No se pudieron cargar los resultados.";
   } finally {
     loading.value = false;
   }
@@ -174,46 +283,60 @@ onMounted(load);
 </script>
 
 <template>
-  <section class="max-w-4xl mx-auto p-4">
-    <h1 class="text-2xl font-bold mb-1">Resultados</h1>
-    <p class="text-sm text-gray-600 mb-4">
-      Asignación: <span class="font-medium">{{ assignment?.title || assignmentId }}</span>
-    </p>
+  <section class="max-w-5xl mx-auto p-4">
+    <header class="mb-4">
+      <h1 class="text-2xl font-bold">Resultados</h1>
+      <p class="text-sm text-gray-600">
+        Asignación: <span class="font-medium">{{ assgTitle }}</span>
+      </p>
+      <div class="flex flex-wrap gap-2 mt-2">
+        <span class="text-xs px-2 py-1 rounded bg-gray-100">Entregado: {{ finishedAtStr }}</span>
+        <span class="text-xs px-2 py-1 rounded bg-gray-100">Puntaje: {{ score }}</span>
+        <span class="text-xs px-2 py-1 rounded bg-gray-100">Preguntas: {{ total }}</span>
+      </div>
+    </header>
 
     <p v-if="loading">Cargando…</p>
     <p v-else-if="errorMsg" class="text-red-600">{{ errorMsg }}</p>
 
-    <template v-else>
-      <div class="mb-4 flex flex-wrap gap-3 text-sm">
-        <span class="px-2 py-1 rounded bg-gray-100">Entregado: {{ finishedAtText }}</span>
-        <span class="px-2 py-1 rounded bg-gray-100">Puntaje: {{ scoreText }}</span>
-        <span class="px-2 py-1 rounded bg-gray-100">Preguntas: {{ rows.length }}</span>
-      </div>
-
-      <ul class="space-y-3" v-if="rows.length">
-        <li v-for="r in rows" :key="r.i" class="border rounded p-3">
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <div class="text-sm text-gray-500 mb-1">Pregunta {{ r.i }}</div>
-              <div class="font-medium mb-2">{{ r.statement }}</div>
-              <div class="text-sm">
-                <div><span class="text-gray-500">Tu respuesta:</span> {{ r.userAnswerText }}</div>
-                <div><span class="text-gray-500">Respuesta correcta:</span> {{ r.correctAnswerText }}</div>
-              </div>
-            </div>
-
-            <span
-              class="shrink-0 px-2 py-1 rounded text-sm"
-              :class="r.ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'"
-            >
-              {{ r.ok ? 'Correcta' : 'Incorrecta' }}
-            </span>
+    <div v-else class="space-y-4">
+      <div
+        v-for="(row, i) in rows"
+        :key="row.p.id"
+        class="border rounded p-4"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm text-gray-500 mb-1">Pregunta {{ i + 1 }}</p>
+            <h3 class="font-semibold">{{ row.p.title || row.p.id }}</h3>
+            <p class="text-gray-600">{{ row.p.statement }}</p>
           </div>
-        </li>
-      </ul>
 
-      <p v-else class="text-sm text-gray-600">No hay preguntas para mostrar.</p>
-    </template>
+          <span
+            class="text-xs px-2 py-1 rounded"
+            :class="row.a?.correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'"
+          >
+            {{ row.a?.correct ? 'Correcta' : 'Incorrecta' }}
+          </span>
+        </div>
+
+        <div class="mt-3 text-sm">
+          <p><span class="text-gray-500">Tu respuesta:</span> {{ renderUserAnswer(row.p, row.a) }}</p>
+          <p><span class="text-gray-500">Respuesta correcta:</span> {{ renderCorrectAnswer(row.p) }}</p>
+        </div>
+
+        <div class="mt-2">
+          <span class="text-gray-500 text-sm">Explicación:</span>
+          <p
+            class="text-sm"
+            :class="row.a?.correct ? 'text-green-700' : 'text-red-700'"
+          >
+            {{ row.a?.feedback || fallbackFeedback(row.p, row.a) || '—' }}
+          </p>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
+
 

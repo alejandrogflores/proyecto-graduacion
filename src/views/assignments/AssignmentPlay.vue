@@ -27,16 +27,29 @@ type Problem = {
   type: ProblemType;
   title?: string;
   statement?: string;
-  options?: string[];         // MC/TF
-  correctIndex?: number;      // MC/TF
-  correctBoolean?: boolean;   // TF alternativo
-  numericSpec?: any;          // NUM
-  answerSpec?: any;           // NUM (alias)
-  numeric?: any;              // NUM (alias)
-  textSpec?: any;             // SHORT TEXT
+
+  // MC/TF
+  options?: string[];
+  correctIndex?: number;
+  correctBoolean?: boolean;
+
+  // NUM
+  numericSpec?: any;
+  answerSpec?: any;
+  numeric?: any;
+
+  // SHORT TEXT
+  textSpec?: any;
   answerText?: string | string[];
   correctText?: string | string[];
   acceptable?: string[];
+
+  // 🔎 NUEVO: campos de explicación (opcionales)
+  explanations?: string[];           // explicación por opción (MC/TF)
+  explanationCorrect?: string;       // fallback si es correcta
+  explanationWrong?: string;         // fallback si es incorrecta
+  explanation?: string;              // explicación general
+  explanationTemplateWrong?: string; // para numérico/texto con plantillas {{x}}, {{x2}}, etc.
 };
 
 type Assignment = {
@@ -56,10 +69,11 @@ type AnswState = Record<string, MCState | TFState | NUMState | SHORTState>;
 
 type SavedAnswer = {
   problemId: string;
-  selectedIndex?: number; // MC/TF (0..N | -1)
-  valueNum?: number | null;
-  valueText?: string | null;
+  selectedIndex?: number;       // MC/TF (0..N | -1)
+  valueNum?: number | null;     // NUM
+  valueText?: string | null;    // SHORT
   correct: boolean;
+  feedback?: string;            // 🔎 NUEVO: explicación guardada
 };
 
 /* =========================
@@ -86,6 +100,11 @@ const total = computed(() => problems.value.length);
 const current = computed(() => problems.value[idx.value] || null);
 const progressPct = computed(() =>
   total.value ? Math.round(((idx.value + 1) / total.value) * 100) : 0
+);
+
+// 🔎 “modo práctica”: retroalimentación inmediata sin esperar a Enviar
+const practiceMode = computed(() =>
+  route.query.practice === "1" || (assg.value as any)?.practiceMode === true
 );
 
 /* =========================
@@ -196,16 +215,60 @@ async function loadAssignmentAndProblems() {
       const ps = await getDoc(doc(colProblems, pid));
       if (!ps.exists()) continue;
       const d = ps.data() as any;
+
+      const tNorm = normType(d.type) as ProblemType;
+
+      // --- Normalizar opciones y correctIndex para Multiple Choice ---
+      let optionsText: string[] | undefined = undefined;
+      let cIdx: number | undefined = undefined;
+
+      if (tNorm === "multiple-choice") {
+        if (Array.isArray(d.options) && d.options.length > 0) {
+          if (typeof d.options[0] === "object") {
+            // Nuevo esquema: [{ text, correct }]
+            optionsText = d.options.map((o: any) => o?.text ?? "");
+            const found = d.options.findIndex((o: any) => o?.correct);
+            cIdx = Number.isInteger(d.correctIndex) ? d.correctIndex : (found >= 0 ? found : 0);
+          } else {
+            // Legacy: ["A","B","C","D"]
+            optionsText = d.options as string[];
+            cIdx = Number.isInteger(d.correctIndex) ? d.correctIndex : 0;
+          }
+        } else {
+          optionsText = [];
+          cIdx = 0;
+        }
+      }
+
+      // --- True/False: soportar answer.correct del nuevo esquema ---
+      const correctBool =
+        typeof d.correctBoolean === "boolean"
+          ? d.correctBoolean
+          : (typeof d.answer?.correct === "boolean" ? d.answer.correct : undefined);
+
       list.push({
         id: pid,
-        type: normType(d.type) as ProblemType,
+        type: tNorm,
         title: d.title,
         statement: d.statement,
-        options: d.options,
-        correctIndex: d.correctIndex,
-        correctBoolean: d.correctBoolean,
+
+        // MC normalizado (solo strings en UI)
+        options: optionsText,
+        correctIndex: cIdx,
+
+        // TF (ambas variantes)
+        correctBoolean: correctBool,
+
+        // numérico / short text (como ya lo tenías)
         numericSpec: d.numericSpec ?? d.answerSpec ?? d.numeric ?? null,
         textSpec: d.textSpec ?? d.answerText ?? d.correctText ?? d.acceptable ?? null,
+
+        // explicaciones
+        explanations: d.explanations ?? null,
+        explanationCorrect: d.explanationCorrect ?? null,
+        explanationWrong: d.explanationWrong ?? null,
+        explanation: d.explanation ?? null,
+        explanationTemplateWrong: d.explanationTemplateWrong ?? null,
       });
     }
     problems.value = list;
@@ -239,7 +302,6 @@ async function ensureOpenAttempt() {
   const open = await getOpenAttempt(assg.value.id, profile.uid);
   if (open) {
     attemptId.value = open.id;
-    // Si guardas borradores previos, aquí puedes hidratar answ.value leyendo open.answersDraft
     return;
   }
 
@@ -250,8 +312,8 @@ async function ensureOpenAttempt() {
     ownerUid: assg.value.ownerUid,
     studentUid: profile.uid,
     studentEmail: profile.email ?? null,
-    answersDraft: [],       // se llena mientras navega
-    answers: [],            // final al enviar
+    answersDraft: [],
+    answers: [],
     correctCount: 0,
     total: problems.value.length,
     score: 0,
@@ -263,6 +325,42 @@ async function ensureOpenAttempt() {
 }
 
 /* =========================
+   Feedback
+   ========================= */
+// helper de plantillas {{x}}
+function tpl(t: string, data: Record<string, any>) {
+  return String(t || "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => String(data[k] ?? ""));
+}
+
+function getFeedback(p: Problem, a: SavedAnswer): string | undefined {
+  const t = p.type;
+
+  if (t === "multiple-choice" || t === "true-false") {
+    const idx = a.selectedIndex ?? -1;
+    if (Array.isArray(p.explanations) && p.explanations[idx]) return p.explanations[idx];
+    if (a.correct) return p.explanationCorrect || p.explanation || "¡Correcto!";
+    return p.explanationWrong || p.explanation || "Revisa la propiedad/definición relacionada.";
+  }
+
+  if (t === "numeric") {
+    if (a.correct) return p.explanationCorrect || "¡Correcto!";
+    const x = a.valueNum;
+    const x2 = typeof x === "number" ? x * x : "—";
+    if (p.explanationTemplateWrong) return tpl(p.explanationTemplateWrong, { x, x2 });
+    return p.explanationWrong || p.explanation || "Resultado numérico fuera del esperado.";
+  }
+
+  if (t === "short-text") {
+    if (a.correct) return p.explanationCorrect || "¡Correcto!";
+    const x = a.valueText ?? "";
+    if (p.explanationTemplateWrong) return tpl(p.explanationTemplateWrong, { x });
+    return p.explanationWrong || p.explanation || "La respuesta no coincide con lo esperado.";
+  }
+
+  return undefined;
+}
+
+/* =========================
    Borrador y envío
    ========================= */
 function buildAnswerFor(p: Problem): SavedAnswer {
@@ -271,7 +369,9 @@ function buildAnswerFor(p: Problem): SavedAnswer {
     const s = answ.value[p.id] as MCState;
     const idx = (s?.selectedIndex ?? null) as number | null;
     const correct = Number.isInteger(idx) && idx === (p.correctIndex ?? -999);
-    return { problemId: p.id, selectedIndex: idx ?? -1, correct };
+    const out: SavedAnswer = { problemId: p.id, selectedIndex: idx ?? -1, correct };
+    out.feedback = getFeedback(p, out);
+    return out;
   }
 
   // True / False
@@ -285,12 +385,16 @@ function buildAnswerFor(p: Problem): SavedAnswer {
     } else if (Number.isInteger(p.correctIndex)) {
       const sel = val === null ? -1 : (val ? 0 : 1); // true->0, false->1
       correct = (sel === p.correctIndex);
-      return { problemId: p.id, selectedIndex: sel, correct };
+      const out: SavedAnswer = { problemId: p.id, selectedIndex: sel, correct };
+      out.feedback = getFeedback(p, out);
+      return out;
     } else {
       correct = val !== null;
     }
     const sel = val === null ? -1 : (val ? 0 : 1);
-    return { problemId: p.id, selectedIndex: sel, correct };
+    const out: SavedAnswer = { problemId: p.id, selectedIndex: sel, correct };
+    out.feedback = getFeedback(p, out);
+    return out;
   }
 
   // Short text
@@ -305,7 +409,9 @@ function buildAnswerFor(p: Problem): SavedAnswer {
       const nInput = normText(input, spec.caseSensitive, spec.trim);
       ok = spec.acceptable.some(a => normText(String(a), spec.caseSensitive, spec.trim) === nInput);
     }
-    return { problemId: p.id, selectedIndex: -1, valueText: input, correct: ok };
+    const out: SavedAnswer = { problemId: p.id, selectedIndex: -1, valueText: input, correct: ok };
+    out.feedback = getFeedback(p, out);
+    return out;
   }
 
   // Numeric
@@ -322,12 +428,14 @@ function buildAnswerFor(p: Problem): SavedAnswer {
 
     const spec = getNumericSpec(p);
     const ok = evalNumeric(spec, num);
-    return {
+    const out: SavedAnswer = {
       problemId: p.id,
       selectedIndex: -1,
       valueNum: Number.isFinite(num as number) ? (num as number) : null,
       correct: ok
     };
+    out.feedback = getFeedback(p, out);
+    return out;
   }
 
   // Fallback
@@ -335,7 +443,6 @@ function buildAnswerFor(p: Problem): SavedAnswer {
 }
 
 async function saveDraft() {
-  // Guarda “answersDraft” con lo respondido hasta el momento (sin finishedAt)
   if (!attemptId.value) return;
   const draft = problems.value.map(buildAnswerFor);
   try {
@@ -360,7 +467,7 @@ async function submit() {
     const finishedAt = serverTimestamp();
 
     await updateDoc(attemptDoc(attemptId.value), {
-      answersDraft: answers,   // conservamos también el borrador final
+      answersDraft: answers,
       answers,
       correctCount,
       total: totalN,
@@ -407,6 +514,13 @@ function goTo(i: number) {
   }
 }
 
+// Evaluación del problema actual (para feedback inmediato)
+const currentEval = computed(() => {
+  const p = current.value;
+  if (!p) return null;
+  return buildAnswerFor(p);
+});
+
 onBeforeUnmount(() => { saveDraft(); });
 onMounted(loadAssignmentAndProblems);
 </script>
@@ -448,7 +562,7 @@ onMounted(loadAssignmentAndProblems);
       </div>
 
       <!-- Problema actual -->
-      <div v-if="current" class="bg-white border rounded p-4 mb-4">
+      <div v-if="current" class="bg-white border rounded p-4 mb-2">
         <h3 class="font-semibold mb-1">
           Pregunta {{ idx + 1 }} — {{ current.title || current.id }}
         </h3>
@@ -528,6 +642,16 @@ onMounted(loadAssignmentAndProblems);
         <div v-else class="text-red-600">
           Tipo no soportado: {{ current.type }}
         </div>
+      </div>
+
+      <!-- 💬 Feedback inmediato (solo en práctica) -->
+      <div v-if="practiceMode && currentEval?.feedback" class="mb-4">
+        <p
+          class="text-sm px-3 py-2 rounded border inline-block"
+          :class="currentEval?.correct ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'"
+        >
+          {{ currentEval?.feedback }}
+        </p>
       </div>
 
       <!-- Controles de navegación -->
