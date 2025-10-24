@@ -5,7 +5,9 @@ import { auth } from "@/services/firebase";
 import { useProfileStore } from "@/stores/profile";
 
 import Login from "@/views/Login.vue";
-import Dashboard from "@/views/Dashboard.vue";
+// Dashboard en lazy-load (nuevo path /dashboard)
+const Dashboard = () => import("@/views/Dashboard.vue");
+
 import ProblemsList from "@/views/problems/ProblemsList.vue";
 import ProblemForm from "@/views/problems/ProblemForm.vue";
 import SolveProblem from "@/views/solve/SolveProblem.vue";
@@ -22,12 +24,16 @@ const LS_KEY = "postLoginRedirect";
 const routes: RouteRecordRaw[] = [
   { path: "/login", name: "Login", component: Login, meta: { hideHeader: true } },
 
-  { path: "/", name: "Dashboard", component: Dashboard, meta: onlyAuth() },
+  // ⬇ raíz redirige al dashboard real
+  { path: "/", redirect: { name: "Dashboard" } },
+  { path: "/dashboard", name: "Dashboard", component: Dashboard, meta: onlyAuth() },
+
   { path: "/problems", name: "ProblemsList", component: ProblemsList, meta: onlyAuth() },
   { path: "/problems/new", name: "ProblemNew", component: ProblemForm, meta: onlyTeacher() },
   { path: "/problems/:id/solve", name: "ProblemSolve", component: SolveProblem, props: true, meta: onlyAuth() },
   { path: "/problems/:id", name: "ProblemEdit", component: ProblemForm, props: true, meta: onlyTeacher() },
-  { path: "/reports", name: "Reports", component: Reports, meta: onlyAuth() },
+
+  { path: "/reports", name: "Reports", component: Reports, meta: onlyTeacher() },
   { path: "/teacher/:problemId?", name: "AttemptsView", component: AttemptsView, props: true, meta: onlyTeacher() },
   { path: "/admin-tools", name: "admin-tools", component: AdminTools, meta: onlyStaff() },
 
@@ -41,7 +47,7 @@ const routes: RouteRecordRaw[] = [
     name: "SolveAssignment",
     component: () => import("@/views/assignments/SolveAssignment.vue"),
     beforeEnter: [onlyNotFinished],
-    meta: onlyAuth(), // acceso autenticado
+    meta: onlyAuth(),
   },
 
   {
@@ -49,10 +55,18 @@ const routes: RouteRecordRaw[] = [
     name: "AssignmentResult",
     component: () => import("@/views/assignments/AssignmentResult.vue"),
   },
+  
+  {
+    path: "/assignments/new",
+    name: "AssignmentNew",
+    component: () => import("@/views/assignments/AssignmentNew.vue"),
+    meta: onlyTeacher(),
+  },
+
+  { path: "/attempts/my", name: "MyAttemptsHistory", component: () => import("@/views/assignments/AttemptHistory.vue"), meta: onlyAuth() },
 
   // ⬇️ Debe ir al final
-  { path: "/:pathMatch(.*)*", redirect: "/" },
-  { path: "/attempts/my", name: "MyAttemptsHistory", component: () => import("@/views/assignments/AttemptHistory.vue"), meta: onlyAuth() },
+  { path: "/:pathMatch(.*)*", redirect: { name: "Dashboard" } },
 ];
 
 const router = createRouter({
@@ -113,7 +127,7 @@ router.beforeEach(async (to, _from, next) => {
     if (to.name === "Login" && auth.currentUser) {
       const fromLS = consumePostLoginRedirect(to.fullPath);
       if (fromLS) return next(fromLS);
-      const q = (to.query?.redirect as string) || "/";
+      const q = (to.query?.redirect as string) || { name: "Dashboard" };
       return next(q);
     }
     return next();
@@ -135,7 +149,7 @@ router.beforeEach(async (to, _from, next) => {
 
   // Si voy a /login estando logueado, respeta ?redirect
   if (to.name === "Login" && auth.currentUser) {
-    const q = (to.query?.redirect as string) || "/";
+    const q = (to.query?.redirect as string) || { name: "Dashboard" };
     return next(q);
   }
 
@@ -155,8 +169,3 @@ router.beforeEach(async (to, _from, next) => {
 });
 
 export default router;
-
-
-
-
-

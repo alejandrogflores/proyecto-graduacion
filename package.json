@@ -18,8 +18,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "chart.js": "^4.5.1",
     "firebase": "^12.2.1",
-    "firebase-admin": "^13.5.0",
+    "firebase-admin": "^12.7.0",
     "pinia": "^3.0.3",
     "vue": "^3.5.18",
     "vue-router": "^4.5.1"
@@ -39,5 +40,9 @@
     "vite": "^7.1.2",
     "vitest": "^3.2.4",
     "vue-tsc": "^3.0.5"
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
   }
 }

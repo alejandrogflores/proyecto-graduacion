@@ -22,20 +22,3 @@ const route = useRoute();
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

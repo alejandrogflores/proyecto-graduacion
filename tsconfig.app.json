@@ -1,7 +1,13 @@
 {
   "compilerOptions": {
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": { "@/*": ["src/*"] },
+    "target": "ES2020",
+    "module": "ESNext",                // ✅ o "NodeNext"
+    "moduleResolution": "Bundler",     // ✅ (recomendado Vite 5) — si te da ruido, usa "NodeNext"
+    "lib": ["ES2020", "DOM"],
+    "types": ["vite/client"]           // ✅ para que reconozca import.meta.env
+
   }
 }
 

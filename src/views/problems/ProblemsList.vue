@@ -1,3 +1,4 @@
+<!-- src/views/ProblemsList.vue -->
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import { useRouter } from "vue-router";
@@ -8,47 +9,62 @@ import {
   limit,
   getDocs,
   deleteDoc,
-  Timestamp,
+  DocumentData,
+  QueryConstraint,
 } from "firebase/firestore";
+import { getAuth } from "firebase/auth";
 import { colProblems, colTags, problemDoc } from "@/services/firebase";
 import { useProfileStore } from "@/stores/profile";
 import { storeToRefs } from "pinia";
 
-// --- Perfil / permisos ---
+/* =========================
+   Perfil / permisos
+========================= */
 const profile = useProfileStore();
 const { ready, role, uid } = storeToRefs(profile);
 const canManage = computed(() => role.value === "teacher" || role.value === "admin");
 const revealAnswers = computed(() => ready.value && canManage.value);
 
-// --- Estado UI ---
+/* =========================
+   Estado UI
+========================= */
 const router = useRouter();
 const loading = ref(false);
 const error = ref<string | null>(null);
 
-// --- Datos ---
+/* =========================
+   Tipos y datos
+========================= */
+type Difficulty = "easy" | "medium" | "hard";
+type Visibility = "public" | "private" | "archived";
+
 type Problem = {
   id: string;
   title: string;
   statement: string;
-  options: string[];
+  // options puede venir como array de strings o de objetos {text, correct}
+  options: Array<string | { text: string; correct?: boolean }>;
   correctIndex: number;
   createdAt?: any;
   updatedAt?: any;
   createdBy?: string | null;
+  ownerUid?: string | null;
   tags?: string[];
-  difficulty?: "easy" | "medium" | "hard";
-  visibility?: "public" | "private" | "archived";
+  difficulty?: Difficulty;
+  visibility?: Visibility;
   version?: number;
 };
 
 const problems = ref<Problem[]>([]);
-const pageSize = 20;
+const pageSize = 100;
 
 const tags = ref<{ slug: string; name: string }[]>([]);
 const selectedTag = ref<string | null>(null);
-const selectedDifficulty = ref<"easy" | "medium" | "hard" | null>(null);
+const selectedDifficulty = ref<Difficulty | null>(null);
 
-// --- Utils ---
+/* =========================
+   Utils
+========================= */
 function fmtTs(ts: any): string {
   try {
     if (!ts) return "—";
@@ -60,7 +76,15 @@ function fmtTs(ts: any): string {
   }
 }
 
-// --- Cargas ---
+function normalizeOptions(d: DocumentData): Array<string | { text: string; correct?: boolean }> {
+  if (Array.isArray(d.options)) return d.options as any[];
+  if (Array.isArray(d.options_strings)) return d.options_strings as string[];
+  return [];
+}
+
+/* =========================
+   Cargas
+========================= */
 async function loadTags() {
   const snap = await getDocs(colTags);
   tags.value = snap.docs.map((d) => ({ slug: d.data().slug, name: d.data().name }));
@@ -69,30 +93,77 @@ async function loadTags() {
 async function loadProblems() {
   loading.value = true;
   error.value = null;
-  try {
-    const conds: any[] = [where("visibility", "==", "public")];
-    if (selectedTag.value) conds.push(where("tags", "array-contains", selectedTag.value));
-    if (selectedDifficulty.value) conds.push(where("difficulty", "==", selectedDifficulty.value));
 
-    // Nota: si no tienes createdAt, quita el orderBy o pon fallback
-    const qRef = query(colProblems, ...conds, orderBy("createdAt", "desc"), limit(pageSize));
-    const snap = await getDocs(qRef);
-    problems.value = snap.docs.map(
-      (d) =>
-        ({
+  try {
+    console.log("[ENV] VITE_FIREBASE_PROJECT_ID =", import.meta.env.VITE_FIREBASE_PROJECT_ID);
+
+    const uidVal = uid.value || getAuth().currentUser?.uid || "";
+    // Filtros comunes que aplican a todas las consultas
+    const common: QueryConstraint[] = [];
+    if (selectedTag.value) common.push(where("tags", "array-contains", selectedTag.value));
+    if (selectedDifficulty.value) common.push(where("difficulty", "==", selectedDifficulty.value));
+
+    // 1) Públicos
+    const qPublic = query(
+      colProblems,
+      where("visibility", "==", "public"),
+      ...common,
+      orderBy("createdAt", "desc"),
+      limit(pageSize)
+    );
+
+    // 2) Míos por ownerUid
+    const qMineOwner =
+      uidVal &&
+      query(
+        colProblems,
+        where("ownerUid", "==", uidVal),
+        ...common,
+        orderBy("createdAt", "desc"),
+        limit(pageSize)
+      );
+
+    // 3) Míos por createdBy (por compatibilidad con datos viejos)
+    const qMineCreated =
+      uidVal &&
+      query(
+        colProblems,
+        where("createdBy", "==", uidVal),
+        ...common,
+        orderBy("createdAt", "desc"),
+        limit(pageSize)
+      );
+
+    // Fusiona + dedup por id (reutilizamos pubSnap para no leer 2 veces)
+    const snaps = await Promise.all([
+      getDocs(qPublic),
+      qMineOwner ? getDocs(qMineOwner) : Promise.resolve({ docs: [] } as any),
+      qMineCreated ? getDocs(qMineCreated) : Promise.resolve({ docs: [] } as any),
+    ]);
+
+    const map = new Map<string, Problem>();
+    for (const snap of snaps) {
+      for (const d of snap.docs) {
+        const data = d.data();
+        map.set(d.id, {
           id: d.id,
-          ...d.data(),
-          // defaults seguros
-          tags: d.data().tags ?? [],
-          difficulty: d.data().difficulty ?? "medium",
-          visibility: d.data().visibility ?? "public",
-          version: d.data().version ?? 1,
-          options: Array.isArray(d.data().options) ? d.data().options : [],
+          ...data,
+          options: normalizeOptions(data),
+          tags: data.tags ?? [],
+          difficulty: (data.difficulty ?? "medium") as Difficulty,
+          visibility: (data.visibility ?? "public") as Visibility,
+          version: data.version ?? 1,
+          ownerUid: data.ownerUid ?? null,
+          createdBy: data.createdBy ?? null,
           correctIndex:
-            Number.isInteger(d.data().correctIndex) && d.data().correctIndex >= 0
-              ? d.data().correctIndex
-              : 0,
-        } as Problem)
+            Number.isInteger(data.correctIndex) && data.correctIndex >= 0 ? data.correctIndex : 0,
+        } as Problem);
+      }
+    }
+
+    // Orden final por createdAt desc con fallback
+    problems.value = Array.from(map.values()).sort(
+      (a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0)
     );
   } catch (e: any) {
     console.error(e);
@@ -102,7 +173,9 @@ async function loadProblems() {
   }
 }
 
-// --- Navegación / acciones ---
+/* =========================
+   Navegación / acciones
+========================= */
 function goCreate() {
   router.push({ name: "ProblemNew" });
 }
@@ -113,7 +186,7 @@ async function removeRow(id: string) {
   if (!confirm("¿Eliminar este problema? (solo admin)")) return;
   try {
     await deleteDoc(problemDoc(id));
-    await loadProblems(); // refrescar
+    await loadProblems();
   } catch (e: any) {
     console.error(e);
     alert(
@@ -124,7 +197,9 @@ async function removeRow(id: string) {
   }
 }
 
-// --- Lifecycle ---
+/* =========================
+   Lifecycle
+========================= */
 onMounted(async () => {
   await loadTags();
   await loadProblems();
@@ -192,18 +267,21 @@ watch([selectedTag, selectedDifficulty], loadProblems);
         <!-- Opciones (solo teachers/admin) -->
         <ul v-if="revealAnswers" class="text-sm text-gray-700 mb-3">
           <li v-for="(opt, i) in p.options" :key="i">
-            {{ String.fromCharCode(65 + i) }}) {{ opt }}
+            {{ String.fromCharCode(65 + i) }}) {{ typeof opt === 'string' ? opt : opt?.text }}
             <span v-if="i === p.correctIndex">✔</span>
           </li>
         </ul>
 
         <div class="flex gap-2">
-          <router-link class="px-3 py-1 rounded border" :to="{ name: 'ProblemSolve', params: { id: p.id } }">
+          <router-link
+            class="px-3 py-1 rounded border"
+            :to="{ name: 'ProblemSolve', params: { id: p.id } }"
+          >
             Resolver
           </router-link>
 
           <button
-            v-if="canManage || p.createdBy === uid"
+            v-if="canManage || p.ownerUid === uid || p.createdBy === uid"
             class="px-3 py-1 rounded bg-amber-500 text-white"
             @click="goEdit(p.id)"
           >
@@ -224,8 +302,9 @@ watch([selectedTag, selectedDifficulty], loadProblems);
         </p>
       </article>
 
-      <p v-if="problems.length === 0 && !loading" class="text-gray-600">Aún no hay problemas.</p>
+      <p v-if="problems.length === 0 && !loading" class="text-gray-600">
+        Aún no hay problemas.
+      </p>
     </div>
   </section>
 </template>
-

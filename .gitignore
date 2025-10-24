@@ -35,3 +35,7 @@ firestore_export/
 *.tsbuildinfo
 
 
+firebase-export-*/
+scripts/keys/
+.env*
+*.local

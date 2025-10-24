@@ -2,93 +2,121 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    /* ==== Helpers ==== */
     function isSignedIn() { return request.auth != null; }
+
+    // Lee el rol desde /users/{uid} en la DB
     function userRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      return isSignedIn()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : null;
     }
-    function isTeacher() { return isSignedIn() && userRole() in ['teacher', 'admin']; }
-    function isStudent() { return isSignedIn() && userRole() == 'student'; }
-    function isOwner(uid) { return isSignedIn() && uid == request.auth.uid; }
 
-    // users
+    function isTeacher() {
+      return isSignedIn() && (userRole() in ['teacher', 'admin']);
+    }
+
+    function isStudent() {
+      return isSignedIn() && (userRole() == 'student');
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && (uid == request.auth.uid);
+    }
+
+    /* ==== users ==== */
     match /users/{uid} {
+      // Cualquiera autenticado puede leer perfiles básicos
       allow read: if isSignedIn();
-      allow write: if request.auth.uid == uid || isTeacher();
+      // El propio usuario puede escribir su doc; teacher/admin también
+      allow write: if isOwner(uid) || isTeacher();
     }
 
-    // classes
+    /* ==== classes ==== */
     match /classes/{id} {
       allow read: if isSignedIn();
-      allow create: if isTeacher() && isOwner(request.resource.data.ownerUid);
-      allow update, delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      // Crear solo teacher/admin y que coincida ownerUid
+      allow create: if isTeacher() && request.resource.data.ownerUid == request.auth.uid;
+      // Actualizar/eliminar solo teacher/admin
+      allow update, delete: if isTeacher();
     }
 
-    // problems
+    /* ==== tags ==== */
+    match /tags/{id} {
+      // Lectura para cualquiera autenticado (ajusta a `true` si los quieres públicos sin login)
+      allow read: if isSignedIn();
+      // Escritura solo teacher/admin
+      allow create, update, delete: if isTeacher();
+    }
+
+    /* ==== problems ==== */
     match /problems/{id} {
-      allow read: if isSignedIn();
-      allow create: if isTeacher() && isOwner(request.resource.data.ownerUid);
-      allow update, delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      // LECTURA:
+      //  - públicos para cualquier autenticado (students/teachers)
+      //  - o para teachers/admin
+      //  - o para el dueño/creador aunque sea privado
+      allow read: if
+        (isSignedIn() && resource.data.visibility == "public") ||
+        isTeacher() ||
+        (isSignedIn() &&
+          (resource.data.ownerUid == request.auth.uid ||
+           resource.data.createdBy == request.auth.uid));
+
+      // ESCRITURA: crear/editar/borrar solo teacher/admin
+      // (en create exigimos que el ownerUid sea el autor del request)
+      allow create: if isTeacher() && request.resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if isTeacher();
     }
 
-    // assignments
+    /* ==== assignments ==== */
     match /assignments/{id} {
-      allow read: if isSignedIn();
-      allow create: if isTeacher() && isOwner(request.resource.data.ownerUid);
-      allow update, delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      // Teacher/Admin: acceso total
+      allow read: if isTeacher()
+               // Student: solo si publicado y dirigido al usuario
+               || (isStudent()
+                   && resource.data.isPublished == true
+                   && (
+                        // si usas arreglo de uids
+                        (resource.data.assigneeUids != null
+                          && request.auth.uid in resource.data.assigneeUids)
+                        ||
+                        // si usas mapa {uid:true}
+                        (resource.data.assignees != null
+                          && resource.data.assignees[request.auth.uid] == true)
+                      )
+                  );
+
+      // Crear/editar/eliminar assignments: solo teacher/admin
+      allow create: if isTeacher() && request.resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if isTeacher();
     }
 
-    // attempts (actualizado)
+    /* ==== attempts ==== */
     match /attempts/{id} {
+      // Leer: el dueño del intento o teacher/admin
+      allow read: if (isSignedIn() && isOwner(resource.data.ownerUid)) || isTeacher();
 
-      // Crea el propio alumno (acepta userUid o studentUid)
-      function isSelfCreate() {
-        let d = request.resource.data;
-        return isSignedIn() && (
-          (('userUid' in d) && d.userUid == request.auth.uid) ||
-          (('studentUid' in d) && d.studentUid == request.auth.uid)
-        );
-      }
-
-      // Dueño del intento existente
-      function isSelfExisting() {
-        return isSignedIn() && (
-          resource.data.userUid == request.auth.uid ||
-          (('studentUid' in resource.data) && resource.data.studentUid == request.auth.uid)
-        );
-      }
-
-      // Esquema válido al crear:
-      // - viejo: problemId
-      // - nuevo: assignmentId + answers[]
-      function shapeIsValidOnCreate() {
-        let d = request.resource.data;
-        return (('problemId' in d) && d.problemId is string)
-            || (('assignmentId' in d) && d.assignmentId is string && ('answers' in d));
-      }
-
-      // Crear: alumno para sí mismo + ownerUid presente + shape válido
+      // Crear: student y el ownerUid debe ser el suyo
       allow create: if isStudent()
-        && isSelfCreate()
-        && (request.resource.data.ownerUid is string)
-        && shapeIsValidOnCreate();
+                 && request.resource.data.ownerUid == request.auth.uid
+                 && request.resource.data.assignmentId is string
+                 && request.resource.data.createdAt != null;
 
-      // Actualizar: el alumno dueño mientras no esté finalizado
-      allow update: if isSelfExisting() && resource.data.finishedAt == null;
-
-      // Leer: alumno dueño o teacher owner
-      allow get, list: if isSignedIn() && (
-        isSelfExisting() || isOwner(resource.data.ownerUid)
-      );
-
-      // Borrar: solo el teacher dueño
-      allow delete: if isTeacher() && isOwner(resource.data.ownerUid);
+      // Actualizar: dueño (si necesitas limitar, puedes exigir un estado no-finalizado)
+      allow update: if isStudent() && isOwner(resource.data.ownerUid);
+      // Borrar: solo teacher/admin
+      allow delete: if isTeacher();
     }
 
-    // fallback
+    /* ==== catch-all (bloquea todo lo no especificado) ==== */
     match /{document=**} {
-      allow read: if isSignedIn();
-      allow write: if false;
+      allow read, write: if false;
     }
   }
 }
+
+
+
+
+
 
