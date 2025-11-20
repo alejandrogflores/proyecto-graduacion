@@ -1,4 +1,3 @@
-// src/services/firebase.ts
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
@@ -14,11 +13,10 @@ import {
   setDoc,
   serverTimestamp,
   connectFirestoreEmulator,
-  // ✅ Asegúrate de tener estos (los usarás en queries de attempts)
   query, where, limit, getDocs,
 } from "firebase/firestore";
 
-// .env (o hardcode en emulador)
+
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_API_KEY,
   authDomain: import.meta.env.VITE_AUTH_DOMAIN,

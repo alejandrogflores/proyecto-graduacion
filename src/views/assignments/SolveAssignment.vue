@@ -338,10 +338,7 @@ async function finalizeAttempt(){
     <div v-else>
       <div class="flex items-center justify-between text-sm text-gray-600 mb-3">
         <div>Problema {{ i + 1 }} de {{ total }}</div>
-        <div class="flex gap-2">
-          <button class="px-3 py-1 rounded-lg border" :disabled="!canPrev || saving || locked" @click="goPrev" title="Anterior (←)">← Anterior</button>
-          <button class="px-3 py-1 rounded-lg border" :disabled="!canNext || saving || locked" @click="goNext" title="Siguiente (→)">Siguiente →</button>
-        </div>
+        
       </div>
 
       <div v-if="current" class="space-y-3 border rounded-xl p-4">
